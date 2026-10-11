@@ -8,7 +8,7 @@ for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
-for %%t in (tone wavinfo) do (
+for %%t in (tone wavinfo play) do (
     call .\build.bat audio\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 if %BAD%==1 goto done
