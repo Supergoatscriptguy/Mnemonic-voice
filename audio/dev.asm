@@ -10,6 +10,7 @@ extern CreateEventA, WaitForSingleObject, CloseHandle, WideCharToMultiByte, Exit
 
 CLSCTX_ALL      equ 0x17
 EVENTCALLBACK   equ 0x40000
+LOOPBACK        equ 0x20000
 VT_LPWSTR       equ 31
 
 %macro guid 11
@@ -81,7 +82,8 @@ hr_fail:
     mov ecx, 1
     call ExitProcess
 
-; ecx = 0 render / 1 capture, rdx = dev (zeroed), r8d = buffer length in ms.
+; ecx = 0 render / 1 capture / 2 loopback (capture what the output plays),
+; rdx = dev (zeroed), r8d = buffer length in ms.
 ; opens the default endpoint and gets the stream ready to start.
 ; eax = 1, or 0 if the mix format isn't float32
 global dev_open
@@ -108,6 +110,10 @@ dev_open:
     HR "creating the device enumerator"
 
     mov edx, ebx                ; eRender / eCapture
+    cmp edx, 2
+    jne .flow
+    xor edx, edx                ; loopback records what the render endpoint plays
+.flow:
     xor r8d, r8d                ; eConsole
     lea r9, [rsi+DV_DEVICE]
     vcall [rsi+DV_ENUM], 4      ; GetDefaultAudioEndpoint
@@ -173,6 +179,9 @@ dev_open:
 
     xor edx, edx                ; AUDCLNT_SHAREMODE_SHARED
     mov r8d, EVENTCALLBACK
+    mov eax, EVENTCALLBACK | LOOPBACK
+    cmp ebx, 2
+    cmove r8d, eax
     imul r9, rdi, 10000         ; ms -> 100 ns
     mov qword [rsp+32], 0       ; periodicity has to be 0 in shared mode
     mov rax, [rsi+DV_FMT]
@@ -305,6 +314,73 @@ dev_space:
     mov eax, [rbx+DV_BUF]
     sub eax, [rsp+40]
     add rsp, 48
+    pop rbx
+    ret
+
+; rcx = dev, rdx = where captured frames go, r8 = room there in frames.
+; takes every whole packet that's waiting and fits. rax = frames.
+; DV_GLITCH counts packets that came after a gap (the first one always says so)
+global dev_read
+dev_read:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 80                 ; GetBuffer has 6 args, locals from +48
+    mov rbx, rcx
+    mov rdi, rdx
+    mov r12, r8
+    xor r13d, r13d
+.packet:
+    lea rdx, [rsp+64]
+    vcall [rbx+DV_SVC], 5       ; GetNextPacketSize
+    HR "GetNextPacketSize"
+    mov eax, [rsp+64]
+    test eax, eax
+    jz .done
+    mov rcx, r12
+    sub rcx, r13
+    cmp rax, rcx
+    ja .done                    ; doesn't fit, leave it for next time
+    lea rdx, [rsp+48]           ; data
+    lea r8, [rsp+56]            ; frames
+    lea r9, [rsp+60]            ; flags
+    mov qword [rsp+32], 0
+    mov qword [rsp+40], 0
+    vcall [rbx+DV_SVC], 3       ; GetBuffer
+    HR "capture GetBuffer"
+    test dword [rsp+60], 1      ; AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY
+    jz .cont
+    cmp dword [rbx+DV_PACKETS], 0
+    je .cont
+    inc dword [rbx+DV_GLITCH]
+.cont:
+    inc dword [rbx+DV_PACKETS]
+    mov ecx, [rsp+56]
+    imul ecx, [rbx+DV_CH]
+    test dword [rsp+60], 2      ; AUDCLNT_BUFFERFLAGS_SILENT: the data is junk, write zeros
+    jnz .silent
+    mov rsi, [rsp+48]
+    rep movsd
+    jmp .release
+.silent:
+    inc dword [rbx+DV_SILENT]
+    xor eax, eax
+    rep stosd
+.release:
+    mov edx, [rsp+56]
+    add r13, rdx
+    vcall [rbx+DV_SVC], 4       ; ReleaseBuffer
+    HR "capture ReleaseBuffer"
+    jmp .packet
+.done:
+    mov rax, r13
+    add rsp, 80
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
     pop rbx
     ret
 

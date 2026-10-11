@@ -4,7 +4,7 @@
 extern wav_parse, wav_read, wav_write
 
 ; dev.asm
-extern dev_open, dev_show, dev_start, dev_stop, dev_close, dev_wait, dev_space, dev_write
+extern dev_open, dev_show, dev_start, dev_stop, dev_close, dev_wait, dev_space, dev_write, dev_read
 
 ; an open wasapi stream
 DV_ENUM     equ 0
@@ -20,7 +20,10 @@ DV_DIR      equ 60          ; u32, 0 render 1 capture
 DV_PERIOD   equ 64          ; u64, the engine's period in 100 ns units
 DV_NAME     equ 72          ; utf-8 friendly name
 DV_NAMELEN  equ 128
-DV_SIZE     equ 200
+DV_PACKETS  equ 200         ; u32, capture packets so far
+DV_GLITCH   equ 204         ; u32, capture packets that followed a gap
+DV_SILENT   equ 208         ; u32, capture packets windows flagged silent
+DV_SIZE     equ 216
 
 ; a decoded clip: f32 samples, interleaved, -1..1
 CL_DATA     equ 0           ; mem_alloc'd
