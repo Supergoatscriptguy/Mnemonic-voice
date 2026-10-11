@@ -4,11 +4,11 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
-for %%t in (tone wavinfo play rec) do (
+for %%t in (tone wavinfo play rec convert) do (
     call .\build.bat audio\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 if %BAD%==1 goto done
@@ -27,6 +27,8 @@ echo == ctrl+c
 bin\ctrltest.exe || set BAD=1
 echo == wav
 bin\wav.exe || set BAD=1
+echo == resampler
+bin\resample.exe || set BAD=1
 
 :done
 echo.

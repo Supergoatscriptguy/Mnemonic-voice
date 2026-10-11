@@ -411,3 +411,128 @@ dev_write:
     pop rsi
     pop rbx
     ret
+
+; rcx = dev (render, open, not started), rdx = clip at the device's rate.
+; lays the clip out in the device's channels (mono goes to all of them, extra
+; channels get dropped, missing ones stay silent), plays it and waits for the end.
+; eax = 1, or 0 if the device stopped asking for audio
+global dev_play
+dev_play:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 48
+    mov rbx, rcx
+    mov r13, [rdx+CL_FRAMES]
+    mov r14d, [rbx+DV_CH]
+    mov ecx, [rdx+CL_CH]
+    mov [rsp+32], rcx
+    mov rcx, [rdx+CL_DATA]
+    mov [rsp+40], rcx
+    mov rcx, r13
+    imul rcx, r14
+    lea rcx, [rcx*4+64]
+    call mem_alloc
+    mov r15, rax
+    mov rsi, [rsp+40]
+    mov rdi, rax
+    mov r9, [rsp+32]
+    xor r8d, r8d
+    test r13, r13
+    jz .laidout
+.frame:
+    xor ecx, ecx
+.ch:
+    xor eax, eax
+    mov edx, ecx
+    cmp r9d, 1
+    jne .multi
+    xor edx, edx
+.multi:
+    cmp edx, r9d
+    jae .put
+    mov eax, [rsi+rdx*4]
+.put:
+    mov [rdi], eax
+    add rdi, 4
+    inc ecx
+    cmp ecx, r14d
+    jb .ch
+    lea rsi, [rsi+r9*4]
+    inc r8
+    cmp r8, r13
+    jb .frame
+.laidout:
+    xor r12d, r12d
+    call .feed                  ; fill the buffer before starting, or the first period glitches
+    mov rcx, rbx
+    call dev_start
+.more:
+    cmp r12, r13
+    jae .drain
+    mov rcx, rbx
+    call dev_wait
+    test eax, eax
+    jnz .dead
+    call .feed
+    jmp .more
+.drain:
+    mov rcx, rbx
+    call dev_wait
+    test eax, eax
+    jnz .dead
+    mov rcx, rbx
+    call dev_space
+    cmp eax, [rbx+DV_BUF]
+    jb .drain
+    mov rcx, rbx
+    call dev_wait               ; one more period, the engine reads ahead of the speaker
+    mov rcx, rbx
+    call dev_stop
+    mov eax, 1
+    jmp .out
+.dead:
+    xor eax, eax
+.out:
+    mov [rsp+32], eax
+    mov rcx, r15
+    call mem_free
+    mov eax, [rsp+32]
+    add rsp, 48
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; hands the device as much as it'll take: rbx = dev, r12 = frames handed over,
+; r13 = all frames, r14 = channels, r15 = samples
+.feed:
+    push rsi
+    sub rsp, 32
+    mov rcx, rbx
+    call dev_space
+    mov rsi, r13
+    sub rsi, r12
+    cmp rsi, rax
+    cmova rsi, rax
+    test rsi, rsi
+    jz .fed
+    mov rdx, r12
+    imul rdx, r14
+    lea rdx, [r15+rdx*4]
+    mov rcx, rbx
+    mov r8d, esi
+    call dev_write
+    add r12, rsi
+.fed:
+    add rsp, 32
+    pop rsi
+    ret

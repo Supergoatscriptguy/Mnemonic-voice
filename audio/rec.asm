@@ -1,7 +1,9 @@
-; rec [secs=10] [out=recordings\rec.wav] [loopback=1]: records from the default mic
-; (or with loopback=1, whatever the default output is playing) with a live level
-; meter, ctrl+c stops early. the wav keeps the device's own rate and channels
-; uses: audio\wav audio\dev
+; rec [secs=10] [out=recordings\rec.wav] [out16=recordings\rec16k.wav] [play=0] [loopback=1]
+; records from the default mic (or with loopback=1, whatever the default output is
+; playing) with a live level meter, ctrl+c stops early. out keeps the device's own
+; rate and channels, out16 is mono 16 kHz like the speech model's input, and that
+; one gets played back unless play=0
+; uses: audio\wav audio\dev audio\resample
 ; libs: ole32.lib
 default rel
 bits 64
@@ -27,6 +29,9 @@ c_abs   dq 0x7fffffffffffffff
 k_secs  db "secs", 0
 k_out   db "out", 0
 k_loop  db "loopback", 0
+k_out16 db "out16", 0
+d_out16 db "recordings\rec16k.wav", 0
+k_play  db "play", 0
 d_out   db "recordings\rec.wav", 0
 p_dir   db "recordings", 0
 
@@ -34,6 +39,8 @@ section .bss
 alignb 8
 dev     resb DV_SIZE
 clip    resb CL_SIZE
+clip16  resb CL_SIZE
+clipout resb CL_SIZE
 line    resb 512
 
 section .text
@@ -321,6 +328,56 @@ start:
 .close:
     lea rcx, [dev]
     call dev_close
+
+    ; what the speech model will hear: mono, 16 kHz
+    lea rcx, [clip]
+    call clip_mono
+    lea rcx, [clip]
+    mov edx, 16000
+    lea r8, [clip16]
+    call clip_resample
+    lea rcx, [k_out16]
+    lea rdx, [d_out16]
+    call cfg_str
+    mov rbx, rax
+    mov rcx, rax
+    lea rdx, [clip16]
+    mov r8d, 16
+    call wav_write
+    say "wrote "
+    mov rcx, rbx
+    call print_z
+    say " (16 kHz mono, what the model hears)", 13, 10
+
+    lea rcx, [k_play]
+    mov edx, 1
+    call cfg_int
+    test rax, rax
+    jz .bye
+    ; play that back, so you hear exactly what the model gets
+    lea rdi, [dev]
+    mov ecx, DV_SIZE
+    xor eax, eax
+    rep stosb
+    xor ecx, ecx
+    lea rdx, [dev]
+    mov r8d, 50
+    call dev_open
+    test eax, eax
+    jz .bye
+    lea rcx, [clip16]
+    mov edx, [dev+DV_RATE]
+    lea r8, [clipout]
+    call clip_resample
+    say "playing it back on "
+    lea rcx, [dev]
+    call dev_show
+    lea rcx, [dev]
+    lea rdx, [clipout]
+    call dev_play
+    lea rcx, [dev]
+    call dev_close
+.bye:
     call con_restore
     xor ecx, ecx
     call ExitProcess

@@ -335,3 +335,36 @@ wav_write:
     pop rsi
     pop rbx
     ret
+
+; rcx = clip. averages its channels down to one, in place
+global clip_mono
+clip_mono:
+    mov r8d, [rcx+CL_CH]
+    cmp r8d, 1
+    jbe .done
+    mov rdx, [rcx+CL_DATA]
+    mov r9, rdx
+    mov r10, [rcx+CL_FRAMES]
+    cvtsi2ss xmm2, r8d
+    mov eax, 0x3f800000         ; 1.0
+    movd xmm3, eax
+    divss xmm3, xmm2
+    test r10, r10
+    jz .one
+.frame:
+    xorps xmm0, xmm0
+    mov eax, r8d
+.ch:
+    addss xmm0, [rdx]
+    add rdx, 4
+    dec eax
+    jnz .ch
+    mulss xmm0, xmm3
+    movss [r9], xmm0
+    add r9, 4
+    dec r10
+    jnz .frame
+.one:
+    mov dword [rcx+CL_CH], 1
+.done:
+    ret
