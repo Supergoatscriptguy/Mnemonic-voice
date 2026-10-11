@@ -1,0 +1,11 @@
+bin/
+build/
+datasets/
+features/
+checkpoints/
+models/
+logs/
+samples/
+recordings/
+scratch/
+cache/
