@@ -10,6 +10,7 @@ bits 64
 %include "data/shard.inc"
 %include "tokenizer/tok.inc"
 %include "asr/loader.inc"
+%include "asr/augment.inc"
 
 extern clean_text
 
@@ -27,6 +28,7 @@ align 8
 c_hours dq 57600000.0           ; samples in an hour
 c_scale dq 3.0517578125e-05     ; 1/32768
 c_one   dq 1.0
+c_half  dq 0.5
 c_epsv  dq 1e-5
 
 section .bss
@@ -888,8 +890,12 @@ section .text
 
 ; ---- ld_plan
 
-; eax = samples -> eax = its padded mel frames (flags in [pl_flags])
+; eax = samples -> eax = its padded mel frames: at the micro-batch's speed
+; ([pl_speed]), rounded as [pl_flags] says
 padded:
+    mov edx, eax
+    mov ecx, [pl_speed]
+    call aug_out
     add eax, MEL_HOP - 1
     xor edx, edx
     mov ecx, MEL_HOP
@@ -994,6 +1000,7 @@ ld_plan:
     mov [pl_maxb], r8
     mov rax, [rsp+144]
     mov [pl_flags], rax
+    mov [rbx+LD_PSEED], r9
     lea rcx, [rng]
     mov rdx, r9
     call rng_seed
@@ -1051,6 +1058,22 @@ ld_plan:
 .mb:
     cmp rsi, r13
     jae .pn
+    ; augmenting: this micro-batch's speed (half the changes 0.9x, half 1.1x)
+    mov dword [pl_speed], 0
+    cmp qword [rbx+LD_AUG], 0
+    je .sp
+    lea rcx, [rng]
+    call rng_float
+    mov rax, [rbx+LD_AUG]
+    movsd xmm1, [rax+AG_PSPEED]
+    comisd xmm0, xmm1
+    jae .sp
+    mulsd xmm1, [c_half]
+    mov dword [pl_speed], 1
+    comisd xmm0, xmm1
+    jb .sp
+    mov dword [pl_speed], 2
+.sp:
     ; as many as fit: sorted, so the last one sets T
     xor r14d, r14d              ; c
 .grow:
@@ -1093,6 +1116,8 @@ ld_plan:
     add r8, [rbx+LD_B]
     mov [r8+MP_START], esi
     mov [r8+MP_B], r14d
+    mov eax, [pl_speed]
+    mov [r8+MP_SPEED], eax
     lea rax, [rsi+r14-1]
     mov eax, [rdi+rax*4]
     imul rax, UR_SIZE
@@ -1134,15 +1159,18 @@ ld_plan:
     call below
     dec rsi
     imul rcx, rsi, MP_SIZE
-    shl rax, 4
+    shl rax, 5
+    xor edx, edx
+.sw:
     mov r8, [rdi+rcx]
-    mov r9, [rdi+rcx+8]
-    mov r10, [rdi+rax]
-    mov r11, [rdi+rax+8]
-    mov [rdi+rcx], r10
-    mov [rdi+rcx+8], r11
+    mov r9, [rdi+rax]
+    mov [rdi+rcx], r9
     mov [rdi+rax], r8
-    mov [rdi+rax+8], r9
+    add rcx, 8
+    add rax, 8
+    inc edx
+    cmp edx, MP_SIZE / 8
+    jb .sw
     jmp .fyb
 .done:
     mov [rbx+LD_NB], r15
@@ -1161,6 +1189,7 @@ section .bss
 pl_budget resq 1
 pl_maxb   resq 1
 pl_flags  resq 1
+pl_speed  resq 1                ; the micro-batch being cut: its speed code
 section .text
 
 ; ---- ld_fill
@@ -1175,9 +1204,9 @@ fill1:
     push r13
     push r14
     push r15
-    sub rsp, 48
+    sub rsp, 96                 ; 32: an arg, 40: end, 48: the utterance's rng, 80: n
     mov rsi, rdx
-    mov [rsp+40], r8            ; end
+    mov [rsp+40], r8
     mov r12, r9
 .u:
     cmp rsi, [rsp+40]
@@ -1189,32 +1218,63 @@ fill1:
     add rax, rsi
     mov rcx, [r14+LD_ORDER]
     mov eax, [rcx+rax*4]
+    mov edi, eax                ; its index in the table
     imul r13, rax, UR_SIZE
     add r13, [r14+LD_U]         ; the utterance
     mov rcx, r14
     mov rdx, r13
     mov r8, r12
     call decode
-    mov rdi, rax                ; samples
+    mov [rsp+80], rax           ; samples
     mov eax, [r15+HB_T]
     imul rax, rsi
     imul rbx, rax, MEL_N * 4
     add rbx, [r15+HB_MEL]       ; its rows
     mov rcx, r12
     call pcmbuf
-    mov rdx, rax
+    cmp qword [r14+LD_AUG], 0
+    je .plain
+    ; augmented: speed, reverb, noise on the samples, its own rng from the plan's seed
+    mov [rsp+88], rax
+    lea rcx, [rsp+48]
+    mov rdx, [r14+LD_PSEED]
+    imul rdx, rdx, 1000003
+    add rdx, rdi
+    call rng_seed
+    mov rcx, [rsp+88]
+    mov rdx, [rsp+80]
+    mov rax, [fl_mp]
+    mov r8d, [rax+MP_SPEED]
+    mov r9, r12
+    lea rax, [rsp+48]
+    mov [rsp+32], rax
+    call aug_utt
+    mov r9, [r15+HB_INFO]
+    test r9, r9
+    jz .ni
+    mov [r9+rsi*4], r8d
+.ni:
     lea rcx, [mel]
-    mov r8, rdi
+    mov r8, rdx
+    mov rdx, rax
     mov r9, rbx
     call mel_run
-    ; encoder frames, then the rows normalized and zeros to T
+    jmp .mel
+.plain:
+    mov rdx, rax
+    lea rcx, [mel]
+    mov r8, [rsp+80]
+    mov r9, rbx
+    call mel_run
+.mel:
+    ; encoder frames, then the rows normalized (spec augmented) and zeros to T
+    mov [rsp+80], rax           ; frames now
     mov rcx, [r15+HB_TL]
     lea edx, [rax+7]
     shr edx, 3
     mov [rcx+rsi*4], edx
-    mov r9, rax                 ; frames
+    mov r9, rax
     mov r8, rbx
-    mov r10, rax
 .f:
     test r9, r9
     jz .pad
@@ -1231,10 +1291,19 @@ fill1:
     dec r9
     jmp .f
 .pad:
+    cmp qword [r14+LD_AUG], 0
+    je .zeros
+    mov rcx, rbx
+    mov edx, [rsp+80]
+    lea r8, [rsp+48]
+    call aug_spec
+.zeros:
+    mov rax, [rsp+80]
+    imul rdi, rax, MEL_N * 4
+    add rdi, rbx
     mov ecx, [r15+HB_T]
-    sub rcx, r10
+    sub rcx, rax
     imul rcx, MEL_N
-    mov rdi, r8
     xor eax, eax
     rep stosd
     ; labels: the tokens, then zeros to U
@@ -1264,9 +1333,77 @@ fill1:
     inc rsi
     jmp .u
 .done:
-    add rsp, 48
+    add rsp, 96
     pop r15
     pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; rcx = LD (planned), edx = micro-batch, r8d = which utterance in it, r9 = out f32
+; (room for the most samples after augmentation). that utterance's audio as its
+; batch gets it, augmented the same way. rax = samples, edx = what augmentation did
+; (AI_*). uses thread 0's buffers, so not while a fill runs
+global ld_audio
+ld_audio:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 96                 ; 32: an arg, 40: the rng, 72: samples, 80, 88: temps
+    mov rbx, rcx
+    mov r12d, r8d
+    mov r13, r9
+    imul rsi, rdx, MP_SIZE
+    add rsi, [rbx+LD_B]
+    mov eax, [rsi+MP_START]
+    add eax, r12d
+    mov rcx, [rbx+LD_ORDER]
+    mov edi, [rcx+rax*4]
+    imul rdx, rdi, UR_SIZE
+    add rdx, [rbx+LD_U]
+    mov rcx, rbx
+    xor r8d, r8d
+    call decode
+    mov [rsp+72], rax
+    xor ecx, ecx
+    call pcmbuf
+    xor r8d, r8d                ; info
+    mov rdx, [rsp+72]
+    cmp qword [rbx+LD_AUG], 0
+    je .copy
+    mov [rsp+80], rax
+    lea rcx, [rsp+40]
+    mov rdx, [rbx+LD_PSEED]
+    imul rdx, rdx, 1000003
+    add rdx, rdi
+    call rng_seed
+    mov rcx, [rsp+80]
+    mov rdx, [rsp+72]
+    mov r8d, [rsi+MP_SPEED]
+    xor r9d, r9d
+    lea rax, [rsp+40]
+    mov [rsp+32], rax
+    call aug_utt
+.copy:
+    mov [rsp+72], rdx
+    mov [rsp+88], r8
+    xor ecx, ecx
+.c:
+    cmp rcx, rdx
+    jae .cd
+    mov r9d, [rax+rcx*4]
+    mov [r13+rcx*4], r9d
+    inc rcx
+    jmp .c
+.cd:
+    mov rax, [rsp+72]
+    mov edx, [rsp+88]
+    add rsp, 96
     pop r13
     pop r12
     pop rdi

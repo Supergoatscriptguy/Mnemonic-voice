@@ -1,7 +1,7 @@
 ; the speech data loader: shards -> a table of usable utterances -> a plan of
 ; micro-batches by length -> filled batches (log-mel, labels). include after lib.inc
 
-extern ld_add, ld_index, ld_plan, ld_fill, ld_norm, ld_scratch
+extern ld_add, ld_index, ld_plan, ld_fill, ld_norm, ld_scratch, ld_audio
 
 ; one loader (a training set, or an eval set)
 LD_NSH      equ 0               ; shards open
@@ -22,7 +22,9 @@ LD_ISTD     equ 440             ; f32[80], 1 / std
 LD_ALL      equ 760             ; 0 = training shards (not dev*, test*, valid*), 1 = every
                                 ;   shard, 2 = only the held-out ones
 LD_NAMES    equ 768             ; -> the shards' paths (char*[NSH]), for reports
-LD_SIZE     equ 776
+LD_AUG      equ 776             ; -> augmentation settings (AG_*, aug_init done), 0 = none
+LD_PSEED    equ 784             ; the plan's seed: each utterance's augmentation rng comes from it
+LD_SIZE     equ 792
 
 ; a kept utterance
 UR_SH       equ 0               ; u16 shard
@@ -37,7 +39,8 @@ MP_START    equ 0               ; u32 first entry in LD_ORDER
 MP_B        equ 4               ; u32 utterances
 MP_T        equ 8               ; u32 mel frames, padded
 MP_U        equ 12              ; u32 label row length (its most tokens)
-MP_SIZE     equ 16
+MP_SPEED    equ 16              ; u32 0 = as is, 1 = 0.9x, 2 = 1.1x (augmentation)
+MP_SIZE     equ 32
 
 ; a filled batch, host side (pinned, from ld_scratch)
 HB_MEL      equ 0               ; f32 [B][T][80], normalized, 0 past each utterance's end
@@ -48,7 +51,8 @@ HB_B        equ 32              ; u32
 HB_T        equ 36              ; u32
 HB_U        equ 40              ; u32
 HB_NLAB     equ 44              ; u32 labels in all
-HB_SIZE     equ 48
+HB_INFO     equ 48              ; -> u32 [B]: what augmentation did (AI_*), 0 = don't keep
+HB_SIZE     equ 56
 
 ; ld_plan flags
 PL_FAST     equ 1               ; T a multiple of 128 and B of 8 (B*T/8 a multiple of 128)

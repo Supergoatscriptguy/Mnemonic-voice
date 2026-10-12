@@ -4,12 +4,17 @@
 ; only, unless all=1), keeps what ctc can train on, gets the mel normalization
 ; (worked out and saved the first time), plans an epoch of micro-batches of up to
 ; `frames` mel frames and fills a few: how full they are, and how fast
-; uses: data\shard audio\flac audio\mel asr\text asr\loader tokenizer\pretok tokenizer\bpe tokenizer\tok
+; aug=1 augments as training will (asr\augment's settings from the cfg), and
+; wav=N writes the first N utterances of the first micro-batch, as it hears them,
+; to scratch\aug\ with a line each on what was done to it
+; uses: data\shard audio\flac audio\mel audio\wav audio\fft audio\resample asr\text asr\loader asr\augment tokenizer\pretok tokenizer\bpe tokenizer\tok
 default rel
 bits 64
 %include "lib.inc"
 %include "tokenizer/tok.inc"
+%include "audio/audio.inc"
 %include "asr/loader.inc"
+%include "asr/augment.inc"
 
 section .rdata
 k_all    db "all", 0
@@ -117,7 +122,8 @@ start:
     imul rax, 100
     mov [ld+LD_MAXT], rax
     imul rax, 160
-    lea rcx, [rax+16000]        ; a second of room, for speed changes later
+    lea rcx, [rax+16000]        ; a second of room
+    mov [maxs], rcx
     call ld_scratch
     lea rcx, [k_all]
     xor edx, edx
@@ -227,6 +233,37 @@ start:
     call print_fixed
     say 13, 10
 
+    ; augmentation, if asked for
+    lea rcx, [k_aug]
+    xor edx, edx
+    call cfg_int
+    test rax, rax
+    jz .plan
+    lea rcx, [ag]
+    call aug_config
+    call time_now
+    mov [t0], rax
+    lea rcx, [ag]
+    lea rdx, [d_noise]
+    mov r8, [maxs]
+    call aug_init
+    lea rax, [ag]
+    mov [ld+LD_AUG], rax
+    mov rcx, [t0]
+    call time_since
+    movsd [rsp+32], xmm0
+    say "  augmenting: noise pool of "
+    movsd xmm0, [ag+AG_POOL]
+    divsd xmm0, [c_hrs]
+    mov edx, 1
+    call print_fixed
+    say " h decoded in "
+    movsd xmm0, [rsp+32]
+    mov edx, 1
+    call print_fixed
+    say " s", 13, 10
+
+.plan:
     ; plan an epoch
     lea rcx, [k_frames]
     mov edx, 40000
@@ -420,9 +457,138 @@ start:
     cmp ebx, 4
     jb .pk
     say 13, 10
+    call wavs
     xor ecx, ecx
     call ExitProcess
 
+; wav=N: the first micro-batch's first N utterances as heard, into scratch\aug
+wavs:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 40
+    lea rcx, [k_wav]
+    xor edx, edx
+    call cfg_int
+    mov r12, rax
+    test r12, r12
+    jz .done
+    mov rax, [ld+LD_B]
+    mov eax, [rax+MP_B]
+    cmp r12, rax
+    jbe .n
+    mov r12, rax
+.n:
+    lea rcx, [path]             ; (make_path writes into its argument)
+    lea rdx, [d_augdir]
+    call fmt_str
+    mov byte [rax], 0
+    lea rcx, [path]
+    call make_path
+    mov rcx, [maxs]
+    imul rcx, 5                 ; 4 bytes a sample, room for 0.9x and a tail
+    add rcx, 1 << 20
+    call mem_alloc
+    mov rsi, rax
+    xor ebx, ebx
+.w:
+    cmp rbx, r12
+    jae .done
+    lea rcx, [ld]
+    xor edx, edx
+    mov r8d, ebx
+    mov r9, rsi
+    call ld_audio
+    mov edi, edx                ; what got done
+    mov [clip+CL_DATA], rsi
+    mov [clip+CL_FRAMES], rax
+    mov dword [clip+CL_RATE], 16000
+    mov dword [clip+CL_CH], 1
+    lea rcx, [path]
+    lea rdx, [d_augdir]
+    call fmt_str
+    mov rcx, rax
+    lea rdx, [s_aug]
+    call fmt_str
+    mov rcx, rax
+    mov rdx, rbx
+    mov r8d, 2
+    call fmt_dec0
+    mov rcx, rax
+    lea rdx, [s_wav]
+    call fmt_str
+    mov byte [rax], 0
+    lea rcx, [path]
+    lea rdx, [clip]
+    mov r8d, 16
+    call wav_write
+    say "  "
+    lea rcx, [path]
+    call print_z
+    say ":"
+    test edi, AI_SLOW
+    jz .nf
+    say " 0.9x"
+.nf:
+    test edi, AI_FAST
+    jz .ns
+    say " 1.1x"
+.ns:
+    test edi, AI_RIR
+    jz .nr
+    say " reverb"
+.nr:
+    test edi, AI_NOISE
+    jz .nn
+    say " "                     ; (say goes through rax: index after it)
+    mov eax, edi
+    shr eax, 8
+    and eax, 255
+    lea rcx, [knames]
+    mov rcx, [rcx+rax*8]
+    call print_z
+    say " at "
+    mov ecx, edi
+    shr ecx, 16
+    and ecx, 255
+    call print_dec
+    say " dB"
+.nn:
+    test edi, edi
+    jnz .eol
+    say " as recorded"
+.eol:
+    say 13, 10
+    inc rbx
+    jmp .w
+.done:
+    add rsp, 40
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
 section .rdata
 peek    db 0, 20, 40, 79
+k_aug   db "aug", 0
+k_wav   db "wav", 0
+d_noise db "datasets\shards\noise", 0
+d_augdir db "scratch\aug\", 0
+s_aug   db "aug_", 0
+s_wav   db ".wav", 0
+kn0     db "noise", 0
+kn1     db "music", 0
+kn2     db "babble", 0
+kn3     db "street/indoor noise", 0
+kn4     db "room tone", 0
+align 8
+knames  dq kn0, kn1, kn2, kn3, kn4
+section .bss
+alignb 8
+ag      resb AG_SIZE
+clip    resb CL_SIZE
+path    resb 512
+maxs    resq 1
 extern ExitProcess
