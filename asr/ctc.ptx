@@ -1,0 +1,574 @@
+// the ctc loss. logits are f32 rows of V per frame, [B][Tmax][V].
+// lsm turns rows into log probabilities. alpha and beta are the usual recursions in
+// log space over the label sequence with a blank around and between every label
+// (S = 2U + 1 states): one block per utterance, a thread per state, stepping through
+// the frames. both include the frame's own emission, so a state's posterior is
+// alpha + beta - logp. grad = softmax minus each label's share of the posterior,
+// summed state by state by one thread in a fixed order (no atomics)
+
+// out[r][v] = x[r][v] - ln(sum exp(x[r])). one block of 256 per row
+.visible .entry lsm(
+    .param .u64 px,
+    .param .u64 pout,
+    .param .u32 pv)
+{
+    .shared .align 16 .f32 red[16];
+    .reg .pred  %p;
+    .reg .b32   %r<16>;
+    .reg .b64   %rd<12>;
+    .reg .f32   %f<20>;
+
+    ld.param.u32    %r1, [pv];
+    mov.u32         %r2, %ctaid.x;
+    mov.u32         %r3, %tid.x;
+    mul.wide.u32    %rd1, %r2, %r1;
+    shl.b64         %rd1, %rd1, 2;
+    ld.param.u64    %rd2, [px];
+    add.u64         %rd2, %rd2, %rd1;           // the row
+    ld.param.u64    %rd3, [pout];
+    add.u64         %rd3, %rd3, %rd1;
+    // running max (f1) and sum (f2) in log2 units. the max starts huge and negative
+    // but finite, so a lane with nothing to do doesn't make -inf - -inf = nan
+    mov.f32         %f1, 0fFF61B1E6;            // -3e38
+    mov.f32         %f2, 0f00000000;
+    mov.u32         %r4, %r3;
+ms:
+    setp.ge.u32     %p, %r4, %r1;
+    @%p bra         msdone;
+    mul.wide.u32    %rd4, %r4, 4;
+    add.u64         %rd4, %rd2, %rd4;
+    ld.global.f32   %f3, [%rd4];
+    mul.f32         %f3, %f3, 0f3FB8AA3B;       // log2(e)
+    max.f32         %f4, %f1, %f3;
+    sub.f32         %f5, %f1, %f4;
+    ex2.approx.f32  %f5, %f5;
+    sub.f32         %f6, %f3, %f4;
+    ex2.approx.f32  %f6, %f6;
+    fma.rn.f32      %f2, %f2, %f5, %f6;
+    mov.f32         %f1, %f4;
+    add.u32         %r4, %r4, 256;
+    bra             ms;
+msdone:
+    // across the warp, then the 8 warps
+    mov.u32         %r5, 16;
+wr:
+    shfl.sync.bfly.b32 %f7, %f1, %r5, 31, 0xffffffff;
+    shfl.sync.bfly.b32 %f8, %f2, %r5, 31, 0xffffffff;
+    max.f32         %f4, %f1, %f7;
+    sub.f32         %f5, %f1, %f4;
+    ex2.approx.f32  %f5, %f5;
+    sub.f32         %f6, %f7, %f4;
+    ex2.approx.f32  %f6, %f6;
+    mul.f32         %f9, %f2, %f5;
+    mul.f32         %f10, %f8, %f6;
+    add.f32         %f2, %f9, %f10;
+    mov.f32         %f1, %f4;
+    shr.u32         %r5, %r5, 1;
+    setp.ne.u32     %p, %r5, 0;
+    @%p bra         wr;
+    shr.u32         %r6, %r3, 5;
+    and.b32         %r7, %r3, 31;
+    setp.ne.u32     %p, %r7, 0;
+    @%p bra         stored;
+    mov.u32         %r8, red;
+    shl.b32         %r9, %r6, 3;
+    add.u32         %r8, %r8, %r9;
+    st.shared.f32   [%r8], %f1;
+    st.shared.f32   [%r8+4], %f2;
+stored:
+    bar.sync        0;
+    // every thread folds the 8 partials in the same order
+    mov.u32         %r8, red;
+    ld.shared.f32   %f1, [%r8];
+    ld.shared.f32   %f2, [%r8+4];
+    mov.u32         %r10, 1;
+fold:
+    shl.b32         %r9, %r10, 3;
+    add.u32         %r11, %r8, %r9;
+    ld.shared.f32   %f7, [%r11];
+    ld.shared.f32   %f8, [%r11+4];
+    max.f32         %f4, %f1, %f7;
+    sub.f32         %f5, %f1, %f4;
+    ex2.approx.f32  %f5, %f5;
+    sub.f32         %f6, %f7, %f4;
+    ex2.approx.f32  %f6, %f6;
+    mul.f32         %f9, %f2, %f5;
+    mul.f32         %f10, %f8, %f6;
+    add.f32         %f2, %f9, %f10;
+    mov.f32         %f1, %f4;
+    add.u32         %r10, %r10, 1;
+    setp.lt.u32     %p, %r10, 8;
+    @%p bra         fold;
+    // lse in natural units = (max + log2(sum)) ln 2
+    lg2.approx.f32  %f11, %f2;
+    add.f32         %f11, %f11, %f1;
+    mul.f32         %f11, %f11, 0f3F317218;     // ln 2
+    mov.u32         %r4, %r3;
+wo:
+    setp.ge.u32     %p, %r4, %r1;
+    @%p bra         done;
+    mul.wide.u32    %rd4, %r4, 4;
+    add.u64         %rd5, %rd2, %rd4;
+    ld.global.f32   %f3, [%rd5];
+    sub.f32         %f3, %f3, %f11;
+    add.u64         %rd6, %rd3, %rd4;
+    st.global.f32   [%rd6], %f3;
+    add.u32         %r4, %r4, 256;
+    bra             wo;
+done:
+    ret;
+}
+
+// ln(e^a + e^b + e^c), any of them -inf. in: f1 f2 f3, out: f4. uses f5-f8
+.func (.reg .f32 out) lse3(.reg .f32 a, .reg .f32 b, .reg .f32 c)
+{
+    .reg .pred  %p;
+    .reg .f32   %f<10>;
+    max.f32         %f1, a, b;
+    max.f32         %f1, %f1, c;
+    setp.eq.f32     %p, %f1, 0fFF800000;
+    @%p bra         ninf;
+    sub.f32         %f2, a, %f1;
+    sub.f32         %f3, b, %f1;
+    sub.f32         %f4, c, %f1;
+    mul.f32         %f2, %f2, 0f3FB8AA3B;
+    mul.f32         %f3, %f3, 0f3FB8AA3B;
+    mul.f32         %f4, %f4, 0f3FB8AA3B;
+    ex2.approx.f32  %f2, %f2;
+    ex2.approx.f32  %f3, %f3;
+    ex2.approx.f32  %f4, %f4;
+    add.f32         %f5, %f2, %f3;
+    add.f32         %f5, %f5, %f4;
+    lg2.approx.f32  %f5, %f5;
+    fma.rn.f32      out, %f5, 0f3F317218, %f1;
+    ret;
+ninf:
+    mov.f32         out, 0fFF800000;
+    ret;
+}
+
+// in the kernels below, state s emits labels[b][(s-1)/2] when s is odd and the
+// blank when it's even
+
+// alpha[b][t][s], and loss[b] = -ln p(labels | audio). block = 1024 threads, so
+// up to 511 labels an utterance
+.visible .entry ctc_alpha(
+    .param .u64 plp,
+    .param .u64 plab,
+    .param .u64 ptl,
+    .param .u64 pul,
+    .param .u64 palpha,
+    .param .u64 ploss,
+    .param .u32 ptmax,
+    .param .u32 pv,
+    .param .u32 pumax,
+    .param .u32 pblank)
+{
+    .shared .align 16 .f32 prev[1024];
+    .reg .pred  %p, %pa, %ps;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<24>;
+    .reg .f32   %f<16>;
+
+    mov.u32         %r1, %ctaid.x;              // b
+    mov.u32         %r2, %tid.x;                // s
+    ld.param.u32    %r3, [ptmax];
+    ld.param.u32    %r4, [pv];
+    ld.param.u32    %r5, [pumax];
+    ld.param.u32    %r6, [pblank];
+    ld.param.u64    %rd1, [ptl];
+    mul.wide.u32    %rd2, %r1, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r7, [%rd3];                // T
+    ld.param.u64    %rd1, [pul];
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r8, [%rd3];                // U
+    shl.b32         %r9, %r8, 1;
+    add.u32         %r9, %r9, 1;                // S
+    shl.b32         %r10, %r5, 1;
+    add.u32         %r10, %r10, 1;              // Smax
+    setp.lt.u32     %pa, %r2, %r9;              // this thread has a state
+    // its label, and whether it may skip the blank before it
+    mov.u32         %r11, %r6;
+    mov.pred        %ps, 0;
+    and.b32         %r12, %r2, 1;
+    setp.eq.u32     %p, %r12, 0;
+    @%p bra         labelled;
+    @!%pa bra       labelled;
+    ld.param.u64    %rd4, [plab];
+    mul.lo.u32      %r13, %r1, %r5;
+    shr.u32         %r14, %r2, 1;               // (s-1)/2 for odd s
+    add.u32         %r13, %r13, %r14;
+    mul.wide.u32    %rd5, %r13, 4;
+    add.u64         %rd5, %rd4, %rd5;
+    ld.global.u32   %r11, [%rd5];
+    setp.lt.u32     %p, %r2, 3;
+    @%p bra         labelled;
+    ld.global.u32   %r15, [%rd5+-4];            // the label before
+    setp.ne.u32     %ps, %r11, %r15;
+labelled:
+    // logp row of frame t: lp + ((b * Tmax + t) * V) * 4
+    ld.param.u64    %rd6, [plp];
+    mul.lo.u32      %r16, %r1, %r3;
+    ld.param.u64    %rd7, [palpha];
+    mov.u32         %r17, prev;
+    shl.b32         %r18, %r2, 2;
+    add.u32         %r18, %r17, %r18;           // prev[s]
+    mov.u32         %r19, 0;                    // t
+    // t = 0: the first blank or the first label
+    mov.f32         %f1, 0fFF800000;
+    setp.eq.u32     %p, %r7, 0;
+    @%p bra         empty;
+    @!%pa bra       first;
+    setp.gt.u32     %p, %r2, 1;
+    @%p bra         first;
+    mul.wide.u32    %rd8, %r16, %r4;
+    mul.wide.u32    %rd9, %r11, 1;
+    add.u64         %rd8, %rd8, %rd9;
+    shl.b64         %rd8, %rd8, 2;
+    add.u64         %rd8, %rd6, %rd8;
+    ld.global.f32   %f1, [%rd8];
+first:
+    st.shared.f32   [%r18], %f1;
+    @!%pa bra       nextt;
+    mul.wide.u32    %rd10, %r16, %r10;
+    mul.wide.u32    %rd11, %r2, 1;
+    add.u64         %rd10, %rd10, %rd11;
+    shl.b64         %rd10, %rd10, 2;
+    add.u64         %rd10, %rd7, %rd10;
+    st.global.f32   [%rd10], %f1;
+nextt:
+    bar.sync        0;
+    add.u32         %r19, %r19, 1;
+    setp.ge.u32     %p, %r19, %r7;
+    @%p bra         final;
+    mov.f32         %f1, 0fFF800000;
+    @!%pa bra       wait;
+    ld.shared.f32   %f2, [%r18];                // alpha[t-1][s]
+    mov.f32         %f3, 0fFF800000;
+    setp.eq.u32     %p, %r2, 0;
+    @!%p ld.shared.f32 %f3, [%r18+-4];          // [s-1]
+    mov.f32         %f4, 0fFF800000;
+    @%ps ld.shared.f32 %f4, [%r18+-8];          // [s-2], when the skip is allowed
+    call.uni        (%f5), lse3, (%f2, %f3, %f4);
+    add.u32         %r20, %r16, %r19;
+    mul.wide.u32    %rd8, %r20, %r4;
+    mul.wide.u32    %rd9, %r11, 1;
+    add.u64         %rd8, %rd8, %rd9;
+    shl.b64         %rd8, %rd8, 2;
+    add.u64         %rd8, %rd6, %rd8;
+    ld.global.f32   %f6, [%rd8];
+    add.f32         %f1, %f5, %f6;
+wait:
+    bar.sync        0;                          // everyone has read row t-1
+    st.shared.f32   [%r18], %f1;
+    @!%pa bra       nextt;
+    add.u32         %r20, %r16, %r19;
+    mul.wide.u32    %rd10, %r20, %r10;
+    mul.wide.u32    %rd11, %r2, 1;
+    add.u64         %rd10, %rd10, %rd11;
+    shl.b64         %rd10, %rd10, 2;
+    add.u64         %rd10, %rd7, %rd10;
+    st.global.f32   [%rd10], %f1;
+    bra             nextt;
+final:
+    // -ln(alpha[T-1][S-1] + alpha[T-1][S-2])
+    setp.ne.u32     %p, %r2, 0;
+    @%p bra         out;
+    sub.u32         %r21, %r9, 1;
+    shl.b32         %r21, %r21, 2;
+    add.u32         %r21, %r17, %r21;
+    ld.shared.f32   %f2, [%r21];
+    mov.f32         %f3, 0fFF800000;
+    setp.lt.u32     %p, %r9, 2;
+    @!%p ld.shared.f32 %f3, [%r21+-4];
+    mov.f32         %f4, 0fFF800000;
+    call.uni        (%f5), lse3, (%f2, %f3, %f4);
+    neg.f32         %f1, %f5;
+    bra             loss;
+empty:
+    mov.f32         %f1, 0f7F800000;            // no frames at all: impossible
+    setp.ne.u32     %p, %r2, 0;
+    @%p bra         out;
+loss:
+    ld.param.u64    %rd12, [ploss];
+    mul.wide.u32    %rd13, %r1, 4;
+    add.u64         %rd12, %rd12, %rd13;
+    st.global.f32   [%rd12], %f1;
+out:
+    ret;
+}
+
+// beta[b][t][s], the same recursion from the end
+.visible .entry ctc_beta(
+    .param .u64 plp,
+    .param .u64 plab,
+    .param .u64 ptl,
+    .param .u64 pul,
+    .param .u64 pbeta,
+    .param .u32 ptmax,
+    .param .u32 pv,
+    .param .u32 pumax,
+    .param .u32 pblank)
+{
+    .shared .align 16 .f32 next[1024];
+    .reg .pred  %p, %pa, %ps;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<24>;
+    .reg .f32   %f<16>;
+
+    mov.u32         %r1, %ctaid.x;
+    mov.u32         %r2, %tid.x;
+    ld.param.u32    %r3, [ptmax];
+    ld.param.u32    %r4, [pv];
+    ld.param.u32    %r5, [pumax];
+    ld.param.u32    %r6, [pblank];
+    ld.param.u64    %rd1, [ptl];
+    mul.wide.u32    %rd2, %r1, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r7, [%rd3];                // T
+    ld.param.u64    %rd1, [pul];
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r8, [%rd3];                // U
+    shl.b32         %r9, %r8, 1;
+    add.u32         %r9, %r9, 1;                // S
+    shl.b32         %r10, %r5, 1;
+    add.u32         %r10, %r10, 1;              // Smax
+    setp.lt.u32     %pa, %r2, %r9;
+    // its label, and whether the state two on may be reached directly
+    mov.u32         %r11, %r6;
+    mov.pred        %ps, 0;
+    and.b32         %r12, %r2, 1;
+    setp.eq.u32     %p, %r12, 0;
+    @%p bra         labelled;
+    @!%pa bra       labelled;
+    ld.param.u64    %rd4, [plab];
+    mul.lo.u32      %r13, %r1, %r5;
+    shr.u32         %r14, %r2, 1;
+    add.u32         %r13, %r13, %r14;
+    mul.wide.u32    %rd5, %r13, 4;
+    add.u64         %rd5, %rd4, %rd5;
+    ld.global.u32   %r11, [%rd5];
+    add.u32         %r15, %r2, 2;
+    setp.ge.u32     %p, %r15, %r9;
+    @%p bra         labelled;
+    ld.global.u32   %r15, [%rd5+4];             // the label after
+    setp.ne.u32     %ps, %r11, %r15;
+labelled:
+    ld.param.u64    %rd6, [plp];
+    mul.lo.u32      %r16, %r1, %r3;
+    ld.param.u64    %rd7, [pbeta];
+    mov.u32         %r17, next;
+    shl.b32         %r18, %r2, 2;
+    add.u32         %r18, %r17, %r18;
+    setp.eq.u32     %p, %r7, 0;
+    @%p bra         out;
+    sub.u32         %r19, %r7, 1;               // t = T-1: the last label or the last blank
+    mov.f32         %f1, 0fFF800000;
+    @!%pa bra       first;
+    sub.u32         %r20, %r9, 2;
+    setp.lt.s32     %p, %r2, %r20;              // signed: S - 2 is -1 with no labels
+    @%p bra         first;
+    add.u32         %r21, %r16, %r19;
+    mul.wide.u32    %rd8, %r21, %r4;
+    mul.wide.u32    %rd9, %r11, 1;
+    add.u64         %rd8, %rd8, %rd9;
+    shl.b64         %rd8, %rd8, 2;
+    add.u64         %rd8, %rd6, %rd8;
+    ld.global.f32   %f1, [%rd8];
+first:
+    st.shared.f32   [%r18], %f1;
+    @!%pa bra       nextt;
+    add.u32         %r21, %r16, %r19;
+    mul.wide.u32    %rd10, %r21, %r10;
+    mul.wide.u32    %rd11, %r2, 1;
+    add.u64         %rd10, %rd10, %rd11;
+    shl.b64         %rd10, %rd10, 2;
+    add.u64         %rd10, %rd7, %rd10;
+    st.global.f32   [%rd10], %f1;
+nextt:
+    bar.sync        0;
+    setp.eq.u32     %p, %r19, 0;
+    @%p bra         out;
+    sub.u32         %r19, %r19, 1;
+    mov.f32         %f1, 0fFF800000;
+    @!%pa bra       wait;
+    ld.shared.f32   %f2, [%r18];                // beta[t+1][s]
+    mov.f32         %f3, 0fFF800000;
+    add.u32         %r22, %r2, 1;
+    setp.lt.u32     %p, %r22, %r9;
+    @%p ld.shared.f32 %f3, [%r18+4];            // [s+1]
+    mov.f32         %f4, 0fFF800000;
+    @%ps ld.shared.f32 %f4, [%r18+8];           // [s+2]
+    call.uni        (%f5), lse3, (%f2, %f3, %f4);
+    add.u32         %r21, %r16, %r19;
+    mul.wide.u32    %rd8, %r21, %r4;
+    mul.wide.u32    %rd9, %r11, 1;
+    add.u64         %rd8, %rd8, %rd9;
+    shl.b64         %rd8, %rd8, 2;
+    add.u64         %rd8, %rd6, %rd8;
+    ld.global.f32   %f6, [%rd8];
+    add.f32         %f1, %f5, %f6;
+wait:
+    bar.sync        0;
+    st.shared.f32   [%r18], %f1;
+    @!%pa bra       nextt;
+    add.u32         %r21, %r16, %r19;
+    mul.wide.u32    %rd10, %r21, %r10;
+    mul.wide.u32    %rd11, %r2, 1;
+    add.u64         %rd10, %rd10, %rd11;
+    shl.b64         %rd10, %rd10, 2;
+    add.u64         %rd10, %rd7, %rd10;
+    st.global.f32   [%rd10], %f1;
+    bra             nextt;
+out:
+    ret;
+}
+
+// dlogits[b][t][v] = scale (e^logp[v] - sum over states s with label v of
+// e^(alpha + beta - logp[lab] - ln p)). one block of 256 per frame; padding frames
+// and utterances whose loss isn't finite get zeros
+.visible .entry ctc_grad(
+    .param .u64 plp,
+    .param .u64 plab,
+    .param .u64 ptl,
+    .param .u64 pul,
+    .param .u64 palpha,
+    .param .u64 pbeta,
+    .param .u64 ploss,
+    .param .u64 pg,
+    .param .u32 ptmax,
+    .param .u32 pv,
+    .param .u32 pumax,
+    .param .u32 pblank,
+    .param .f32 pscale)
+{
+    .shared .align 16 .f32 row[1024];
+    .reg .pred  %p, %pz;
+    .reg .b32   %r<32>;
+    .reg .b64   %rd<24>;
+    .reg .f32   %f<16>;
+
+    mov.u32         %r1, %ctaid.x;              // row = b * Tmax + t
+    mov.u32         %r2, %tid.x;
+    ld.param.u32    %r3, [ptmax];
+    ld.param.u32    %r4, [pv];
+    ld.param.u32    %r5, [pumax];
+    ld.param.u32    %r6, [pblank];
+    ld.param.f32    %f10, [pscale];
+    div.u32         %r7, %r1, %r3;              // b
+    rem.u32         %r8, %r1, %r3;              // t
+    ld.param.u64    %rd1, [ptl];
+    mul.wide.u32    %rd2, %r7, 4;
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r9, [%rd3];                // T
+    ld.param.u64    %rd1, [pul];
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.u32   %r10, [%rd3];               // U
+    ld.param.u64    %rd1, [ploss];
+    add.u64         %rd3, %rd1, %rd2;
+    ld.global.f32   %f1, [%rd3];                // -ln p
+    // zeros past the end, or when the loss isn't a number we can use
+    setp.ge.u32     %pz, %r8, %r9;
+    abs.f32         %f2, %f1;
+    setp.ge.f32     %p, %f2, 0f7F800000;        // inf
+    or.pred         %pz, %pz, %p;
+    setp.nan.f32    %p, %f1, %f1;
+    or.pred         %pz, %pz, %p;
+    mul.wide.u32    %rd4, %r1, %r4;
+    shl.b64         %rd4, %rd4, 2;
+    ld.param.u64    %rd5, [plp];
+    add.u64         %rd5, %rd5, %rd4;           // logp row
+    ld.param.u64    %rd6, [pg];
+    add.u64         %rd6, %rd6, %rd4;           // gradient row
+    // the softmax into shared
+    mov.u32         %r11, row;
+    mov.u32         %r12, %r2;
+sm:
+    setp.ge.u32     %p, %r12, %r4;
+    @%p bra         smdone;
+    mov.f32         %f3, 0f00000000;
+    @%pz bra        put;
+    mul.wide.u32    %rd7, %r12, 4;
+    add.u64         %rd7, %rd5, %rd7;
+    ld.global.f32   %f3, [%rd7];
+    mul.f32         %f3, %f3, 0f3FB8AA3B;
+    ex2.approx.f32  %f3, %f3;
+    mul.f32         %f3, %f3, %f10;
+put:
+    shl.b32         %r13, %r12, 2;
+    add.u32         %r13, %r11, %r13;
+    st.shared.f32   [%r13], %f3;
+    add.u32         %r12, %r12, 256;
+    bra             sm;
+smdone:
+    bar.sync        0;
+    // thread 0 takes off every state's posterior, in order
+    setp.ne.u32     %p, %r2, 0;
+    @%p bra         written;
+    @%pz bra        written;
+    shl.b32         %r14, %r10, 1;
+    add.u32         %r14, %r14, 1;              // S
+    shl.b32         %r15, %r5, 1;
+    add.u32         %r15, %r15, 1;              // Smax
+    mul.wide.u32    %rd8, %r1, %r15;
+    shl.b64         %rd8, %rd8, 2;
+    ld.param.u64    %rd9, [palpha];
+    add.u64         %rd9, %rd9, %rd8;
+    ld.param.u64    %rd10, [pbeta];
+    add.u64         %rd10, %rd10, %rd8;
+    ld.param.u64    %rd11, [plab];
+    mul.lo.u32      %r16, %r7, %r5;
+    mul.wide.u32    %rd12, %r16, 4;
+    add.u64         %rd11, %rd11, %rd12;        // this utterance's labels
+    mov.u32         %r17, 0;                    // s
+st:
+    setp.ge.u32     %p, %r17, %r14;
+    @%p bra         written;
+    mov.u32         %r18, %r6;
+    and.b32         %r19, %r17, 1;
+    setp.eq.u32     %p, %r19, 0;
+    @%p bra         lab;
+    shr.u32         %r20, %r17, 1;
+    mul.wide.u32    %rd13, %r20, 4;
+    add.u64         %rd13, %rd11, %rd13;
+    ld.global.u32   %r18, [%rd13];
+lab:
+    mul.wide.u32    %rd14, %r17, 4;
+    add.u64         %rd15, %rd9, %rd14;
+    ld.global.f32   %f4, [%rd15];
+    add.u64         %rd15, %rd10, %rd14;
+    ld.global.f32   %f5, [%rd15];
+    mul.wide.u32    %rd16, %r18, 4;
+    add.u64         %rd16, %rd5, %rd16;
+    ld.global.f32   %f6, [%rd16];
+    add.f32         %f7, %f4, %f5;
+    sub.f32         %f7, %f7, %f6;
+    add.f32         %f7, %f7, %f1;              // + (-ln p)
+    mul.f32         %f7, %f7, 0f3FB8AA3B;
+    ex2.approx.f32  %f7, %f7;                   // this state's share, -inf -> 0
+    shl.b32         %r21, %r18, 2;
+    add.u32         %r21, %r11, %r21;
+    ld.shared.f32   %f8, [%r21];
+    mul.f32         %f7, %f7, %f10;
+    sub.f32         %f8, %f8, %f7;
+    st.shared.f32   [%r21], %f8;
+    add.u32         %r17, %r17, 1;
+    bra             st;
+written:
+    bar.sync        0;
+    mov.u32         %r12, %r2;
+wo:
+    setp.ge.u32     %p, %r12, %r4;
+    @%p bra         done;
+    shl.b32         %r13, %r12, 2;
+    add.u32         %r13, %r11, %r13;
+    ld.shared.f32   %f3, [%r13];
+    mul.wide.u32    %rd7, %r12, 4;
+    add.u64         %rd7, %rd6, %rd7;
+    st.global.f32   [%rd7], %f3;
+    add.u32         %r12, %r12, 256;
+    bra             wo;
+done:
+    ret;
+}
