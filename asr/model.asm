@@ -1424,6 +1424,7 @@ rmsnorm_bwd:
     karg 2, [mdl+MD_D]
     karg 3, NCH
     mov rcx, [mdl+MD_D]
+    shl rcx, 5                  ; a warp per column
     call lin
     add rsp, 32
     pop rbx
@@ -1859,6 +1860,7 @@ sconv_bwd:
     mov [kl+KL_ARGS+16], rax
     karg 3, SCH
     mov rcx, [kl+KL_ARGS+16]
+    shl rcx, 5                  ; a warp per column
     call lin
     add rsp, 32
     pop rdi
@@ -2262,6 +2264,7 @@ model_bwd:
     mov [kl+KL_ARGS+16], rax
     karg 3, NCH
     mov rcx, [kl+KL_ARGS+16]
+    shl rcx, 5                  ; a warp per column
     call lin
     mov rax, [mdl+MD_D]         ; glu: 2D in, D out
     mov [rsp+32], rax
@@ -2397,7 +2400,7 @@ model_step:
     karg 1, [d_gn]
     karg 2, 1
     karg 3, NSQ
-    mov ecx, 1
+    mov ecx, 32                 ; a warp for the one column
     call lin
     KF k_adamw
     karg 0, [d_params]

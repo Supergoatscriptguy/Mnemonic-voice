@@ -424,7 +424,9 @@ done:
     ret;
 }
 
-// part 2: dw[c] += sum of the n partials for column c, in order
+// part 2: dw[c] += the sum of the n partials for column c. a warp per column (launch
+// d * 32 threads): lane i adds partials i, i+32, ... in order, then the warp folds
+// its 32 sums in a fixed butterfly, so the result is the same every time
 .visible .entry colsum(
     .param .u64 ppart,
     .param .u64 pdw,
@@ -432,7 +434,7 @@ done:
     .param .u32 pn)
 {
     .reg .pred  %p;
-    .reg .b32   %r<12>;
+    .reg .b32   %r<16>;
     .reg .b64   %rd<8>;
     .reg .f32   %f<4>;
 
@@ -442,25 +444,38 @@ done:
     mov.u32         %r4, %ntid.x;
     mov.u32         %r5, %tid.x;
     mad.lo.u32      %r6, %r3, %r4, %r5;
-    setp.ge.u32     %p, %r6, %r1;
-    @%p bra         done;
+    shr.u32         %r7, %r6, 5;                // column
+    and.b32         %r8, %r6, 31;               // lane
+    setp.ge.u32     %p, %r7, %r1;
+    @%p bra         done;                       // (a whole warp at a time)
     ld.param.u64    %rd1, [ppart];
     mov.f32         %f1, 0f00000000;
-    mov.u32         %r7, 0;
-    mov.u32         %r8, %r6;
+    mov.u32         %r9, %r8;
 sum:
-    setp.ge.u32     %p, %r7, %r2;
-    @%p bra         sumdone;
-    mul.wide.u32    %rd2, %r8, 4;
+    setp.ge.u32     %p, %r9, %r2;
+    @%p bra         fold;
+    mad.lo.u32      %r10, %r9, %r1, %r7;
+    mul.wide.u32    %rd2, %r10, 4;
     add.u64         %rd2, %rd1, %rd2;
     ld.global.f32   %f2, [%rd2];
     add.f32         %f1, %f1, %f2;
-    add.u32         %r8, %r8, %r1;
-    add.u32         %r7, %r7, 1;
+    add.u32         %r9, %r9, 32;
     bra             sum;
-sumdone:
+fold:
+    shfl.sync.bfly.b32 %f2, %f1, 16, 31, 0xffffffff;
+    add.f32         %f1, %f1, %f2;
+    shfl.sync.bfly.b32 %f2, %f1, 8, 31, 0xffffffff;
+    add.f32         %f1, %f1, %f2;
+    shfl.sync.bfly.b32 %f2, %f1, 4, 31, 0xffffffff;
+    add.f32         %f1, %f1, %f2;
+    shfl.sync.bfly.b32 %f2, %f1, 2, 31, 0xffffffff;
+    add.f32         %f1, %f1, %f2;
+    shfl.sync.bfly.b32 %f2, %f1, 1, 31, 0xffffffff;
+    add.f32         %f1, %f1, %f2;
+    setp.ne.u32     %p, %r8, 0;
+    @%p bra         done;
     ld.param.u64    %rd3, [pdw];
-    mul.wide.u32    %rd4, %r6, 4;
+    mul.wide.u32    %rd4, %r7, 4;
     add.u64         %rd3, %rd3, %rd4;
     ld.global.f32   %f3, [%rd3];
     add.f32         %f3, %f3, %f1;

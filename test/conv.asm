@@ -529,6 +529,7 @@ run_convw:
     mov [rbx+KL_ARGS+16], rcx
     mov eax, [s_ch]
     mov [rbx+KL_ARGS+24], rax
+    shl ecx, 5                  ; a warp per column
     mov rax, [f_colsum]
     call go_flat
     add rsp, 40

@@ -1271,6 +1271,52 @@ profile:
     mov qword [rax+rdi*8], 0
     jmp .pick
 .done:
+    ; the 10 slowest single launches (a big one after a small kernel is the gpu
+    ; waiting on the cpu: the time to the next launch counts as the kernel's)
+    say "  the slowest launches:"
+    xor r12d, r12d
+.top:
+    cmp r12d, 10
+    jae .topd
+    xorps xmm1, xmm1
+    mov rdi, -1
+    xor ecx, ecx
+.tl:
+    cmp rcx, rsi
+    jae .tld
+    lea rax, [prof_ms]
+    movss xmm0, [rax+rcx*4]
+    comiss xmm0, xmm1
+    jbe .tln
+    movaps xmm1, xmm0
+    mov rdi, rcx
+.tln:
+    inc rcx
+    jmp .tl
+.tld:
+    cmp rdi, -1
+    je .topd
+    cvtss2sd xmm1, xmm1
+    movsd [rsp+32], xmm1
+    lea rax, [prof_ms]
+    mov dword [rax+rdi*4], 0
+    say " "
+    lea rax, [prof_fn]
+    mov rcx, [rax+rdi*8]
+    call gpu_fname
+    mov rcx, rax
+    call print_z
+    say "#"
+    mov rcx, rdi
+    call print_dec
+    say "="
+    movsd xmm0, [rsp+32]
+    mov edx, 1
+    call print_fixed
+    inc r12d
+    jmp .top
+.topd:
+    say 13, 10
     add rsp, 40
     pop r12
     pop rdi
