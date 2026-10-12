@@ -35,7 +35,7 @@ bin\resample.exe || set BAD=1
 echo == inflate and gzip
 bin\inflate.exe || set BAD=1
 echo == flac and md5
-binlac.exe || set BAD=1
+bin\flac.exe || set BAD=1
 
 :done
 echo.
