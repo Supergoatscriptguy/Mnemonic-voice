@@ -4,7 +4,7 @@
 ; with our encoder and writes DIR\NNNN.shard plus DIR\dev.shard for the held out
 ; speakers (1 in 100, picked by a hash of the speaker id). each shard is one
 ; thread's job start to finish, so the output doesn't depend on timing
-; uses: data\inflate data\tar audio\flac audio\flacenc
+; uses: data\inflate data\tar data\shardw audio\flac audio\flacenc
 default rel
 bits 64
 %include "lib.inc"
@@ -16,7 +16,6 @@ bits 64
 extern ExitProcess
 
 RATE    equ 16000
-WBUF    equ 8 << 20             ; write buffer per shard
 
 ; a cut from the manifest. strings point into the inflated manifest, texts still
 ; json escaped
@@ -48,20 +47,6 @@ HE_DATA  equ 16
 HE_SIZE  equ 24
 HE_SIZEOF equ 32
 
-; one shard being built
-B_FILE   equ 0
-B_BUF    equ 8
-B_N      equ 16                 ; bytes in the buffer
-B_OFF    equ 24                 ; file offset of the buffer's first byte
-B_IDX    equ 32
-B_NIDX   equ 40
-B_SAMP   equ 48
-B_PATH   equ 64
-B_TMP    equ 320
-B_FD     equ 576
-B_FE     equ B_FD + FD_SIZE
-B_SIZE   equ B_FE + FE_SIZE
-
 section .rdata
 k_cuts  db "cuts", 0
 k_tar   db "tar", 0
@@ -78,7 +63,6 @@ j_next  db '", "', 0
 s_flac  db ".flac", 0
 s_shard db ".shard", 0
 s_dev   db "dev.shard", 0
-s_tmp   db ".tmp", 0
 usage   db "usage: heavy cuts=X.jsonl.gz tar=X.tar out=DIR [shards=64] [threads=0]", 13, 10, 0
 e_man   db "can't read the manifest", 0
 e_gz    db "the manifest's gzip is broken", 0
@@ -172,151 +156,6 @@ jend:
     inc rax                     ; whatever's escaped
     jmp .c
 .out:
-    ret
-
-; 4 hex digits at rcx. eax = value
-hex4:
-    xor eax, eax
-    mov r9d, 4
-.d:
-    movzx edx, byte [rcx]
-    inc rcx
-    or edx, 0x20                ; lower case letters, digits don't care
-    sub edx, '0'
-    cmp edx, 9
-    jbe .digit
-    sub edx, 'a' - '0' - 10
-.digit:
-    shl eax, 4
-    or eax, edx
-    dec r9d
-    jnz .d
-    ret
-
-; rcx = escaped json string, rdx = its end, r8 = out. writes it as utf-8,
-; rax = the end of what got written (never longer than the input)
-unesc:
-    push rbx
-    push rsi
-    push rdi
-    mov rsi, rcx
-    mov rbx, rdx
-    mov rdi, r8
-.c:
-    cmp rsi, rbx
-    jae .out
-    mov al, [rsi]
-    inc rsi
-    cmp al, '\'
-    je .esc
-    mov [rdi], al
-    inc rdi
-    jmp .c
-.esc:
-    mov al, [rsi]
-    inc rsi
-    cmp al, 'u'
-    je .u
-    mov dl, 10
-    cmp al, 'n'
-    je .put
-    mov dl, 9
-    cmp al, 't'
-    je .put
-    mov dl, 13
-    cmp al, 'r'
-    je .put
-    mov dl, 8
-    cmp al, 'b'
-    je .put
-    mov dl, 12
-    cmp al, 'f'
-    je .put
-    mov dl, al                  ; \" \\ \/
-.put:
-    mov [rdi], dl
-    inc rdi
-    jmp .c
-.u:
-    mov rcx, rsi
-    call hex4
-    add rsi, 4
-    cmp eax, 0xd800             ; a high surrogate takes the next \uXXXX with it
-    jb .cp
-    cmp eax, 0xdbff
-    ja .cp
-    cmp word [rsi], '\u'        ; nasm packs it low byte first, same as memory
-    jne .cp
-    mov r10d, eax
-    lea rcx, [rsi+2]
-    call hex4
-    add rsi, 6
-    sub r10d, 0xd800
-    shl r10d, 10
-    sub eax, 0xdc00
-    add eax, r10d
-    add eax, 0x10000
-.cp:
-    ; code point -> utf-8
-    cmp eax, 0x80
-    jae .two
-    mov [rdi], al
-    inc rdi
-    jmp .c
-.two:
-    cmp eax, 0x800
-    jae .three
-    mov edx, eax
-    shr edx, 6
-    or dl, 0xc0
-    mov [rdi], dl
-    and al, 0x3f
-    or al, 0x80
-    mov [rdi+1], al
-    add rdi, 2
-    jmp .c
-.three:
-    cmp eax, 0x10000
-    jae .four
-    mov edx, eax
-    shr edx, 12
-    or dl, 0xe0
-    mov [rdi], dl
-    mov edx, eax
-    shr edx, 6
-    and dl, 0x3f
-    or dl, 0x80
-    mov [rdi+1], dl
-    and al, 0x3f
-    or al, 0x80
-    mov [rdi+2], al
-    add rdi, 3
-    jmp .c
-.four:
-    mov edx, eax
-    shr edx, 18
-    or dl, 0xf0
-    mov [rdi], dl
-    mov edx, eax
-    shr edx, 12
-    and dl, 0x3f
-    or dl, 0x80
-    mov [rdi+1], dl
-    mov edx, eax
-    shr edx, 6
-    and dl, 0x3f
-    or dl, 0x80
-    mov [rdi+2], dl
-    and al, 0x3f
-    or al, 0x80
-    mov [rdi+3], al
-    add rdi, 4
-    jmp .c
-.out:
-    mov rax, rdi
-    pop rdi
-    pop rsi
-    pop rbx
     ret
 
 ; rcx = bytes, rdx = length. rax = fnv-1a 64
@@ -793,46 +632,6 @@ group:
     pop rbx
     ret
 
-; rbx = B. writes out the buffer
-flushb:
-    push rsi
-    sub rsp, 32
-    mov rcx, [rbx+B_FILE]
-    mov rdx, [rbx+B_BUF]
-    mov r8, [rbx+B_N]
-    test r8, r8
-    jz .out
-    call file_write
-    test eax, eax
-    jnz .ok
-    lea rcx, [e_write]
-    call fatal
-.ok:
-    mov rax, [rbx+B_N]
-    add [rbx+B_OFF], rax
-    mov qword [rbx+B_N], 0
-.out:
-    add rsp, 32
-    pop rsi
-    ret
-
-; rbx = B, rcx = bytes it's about to add. flushes first if they won't fit.
-; rax = where they go, rdx = their file offset
-room:
-    sub rsp, 40
-    mov rax, [rbx+B_N]
-    add rax, rcx
-    cmp rax, WBUF
-    jbe .fits
-    call flushb
-.fits:
-    mov rax, [rbx+B_BUF]
-    add rax, [rbx+B_N]
-    mov rdx, [rbx+B_OFF]
-    add rdx, [rbx+B_N]
-    add rsp, 40
-    ret
-
 ; the one line status, redrawn by whoever gets there every half second
 status:
     push rbx
@@ -909,14 +708,12 @@ build:
     push r13
     push r14
     push r15
-    sub rsp, 48
+    sub rsp, 336 + UA_SIZE + 8
+    ; locals: path +32 (260), cuts left in the chapter +296, UA +304
     mov r12, rcx
-    mov ecx, B_SIZE
+    mov ecx, SW_SIZE + FD_SIZE
     call mem_alloc
-    mov rbx, rax
-    mov ecx, WBUF
-    call mem_alloc
-    mov [rbx+B_BUF], rax
+    mov rbx, rax                ; SW, then the FD
     ; its chapters: a slice of the training ones, or all the held out ones
     cmp r12, [nshards]
     jae .devshard
@@ -928,7 +725,7 @@ build:
     mul qword [ntrain]
     div qword [nshards]
     mov r14, rax                ; end
-    lea rcx, [rbx+B_PATH]
+    lea rcx, [rsp+32]
     mov rdx, [outdir]
     call fmt_str
     mov byte [rax], '\'
@@ -945,7 +742,7 @@ build:
     mov r13, [ntrain]
     mov r14, r13
     add r14, [ndev]
-    lea rcx, [rbx+B_PATH]
+    lea rcx, [rsp+32]
     mov rdx, [outdir]
     call fmt_str
     mov byte [rax], '\'
@@ -954,41 +751,13 @@ build:
     call fmt_str
     mov byte [rax], 0
 .named:
-    lea rcx, [rbx+B_TMP]
-    lea rdx, [rbx+B_PATH]
-    call fmt_str
-    mov rcx, rax
-    lea rdx, [s_tmp]
-    call fmt_str
-    mov byte [rax], 0
-    ; room for every cut's index entry
-    xor r15d, r15d
-    mov rcx, r13
-.cnt:
-    cmp rcx, r14
-    jae .counted
-    mov rax, [order]
-    mov rax, [rax+rcx*8]
-    shl rax, 5
-    add rax, [chaps]
-    mov edx, [rax+CH_NCUT]
-    add r15, rdx
-    inc rcx
-    jmp .cnt
-.counted:
-    imul rcx, r15, UT_SIZE
-    add rcx, 64
-    call mem_alloc
-    mov [rbx+B_IDX], rax
-    lea rcx, [rbx+B_TMP]
-    call file_create
-    cmp rax, -1
-    jne .opened
+    mov rcx, rbx
+    lea rdx, [rsp+32]
+    call sw_open
+    test eax, eax
+    jnz .chapter
     lea rcx, [e_write]
     call fatal
-.opened:
-    mov [rbx+B_FILE], rax
-
 .chapter:
     cmp r13, r14
     jae .finish
@@ -998,11 +767,11 @@ build:
     add rsi, [chaps]            ; CH
     mov rcx, [rsi+CH_DATA]
     mov rdx, [rsi+CH_SIZE]
-    lea r8, [rbx+B_FD]
+    lea r8, [rbx+SW_SIZE]
     call flac_decode
     cmp eax, 1
     jne .badch
-    cmp dword [rbx+B_FD+FD_MD5], 1
+    cmp dword [rbx+SW_SIZE+FD_MD5], 1
     je .cuts
 .badch:
     lock inc qword [badch]
@@ -1012,13 +781,13 @@ build:
     imul r15, r15, CU_SIZE
     add r15, [cuts]
     mov eax, [rsi+CH_NCUT]
-    mov [rsp+32], rax           ; cuts left in this chapter
+    mov [rsp+296], rax
 .cut:
-    cmp qword [rsp+32], 0
+    cmp qword [rsp+296], 0
     je .chdone
-    ; clamp to what the chapter has
+    ; clamped to what the chapter has
     mov rax, [r15+CU_START]
-    mov rdx, [rbx+B_FD+FD_N]
+    mov rdx, [rbx+SW_SIZE+FD_N]
     cmp rax, rdx
     jae .nextcut
     mov rcx, [r15+CU_N]
@@ -1027,144 +796,51 @@ build:
     cmova rcx, rdx
     test rcx, rcx
     jz .nextcut
-    mov [rsp+40], rcx
-    mov rdx, rcx
-    mov rcx, [rbx+B_FD+FD_PCM]
-    lea rcx, [rcx+rax*2]
-    mov r8d, RATE
-    lea r9, [rbx+B_FE]
-    call flac_encode
-    ; the index entry
-    mov rdi, [rbx+B_NIDX]
-    imul rdi, rdi, UT_SIZE
-    add rdi, [rbx+B_IDX]
-    mov rcx, [rbx+B_FE+FE_LEN]
-    call room
-    mov [rdi+UT_FLAC], rdx
-    mov rcx, [rbx+B_FE+FE_LEN]
-    mov [rdi+UT_FLEN], ecx
-    push rsi
-    push rdi
-    mov rdi, rax
-    mov rsi, [rbx+B_FE+FE_DATA]
-    rep movsb
-    pop rdi
-    pop rsi
-    mov rax, [rbx+B_FE+FE_LEN]
-    add [rbx+B_N], rax
-    mov rcx, [rbx+B_FE+FE_DATA]
-    call mem_free
-    mov rax, [rsp+40]
-    mov [rdi+UT_N], eax
-    add [rbx+B_SAMP], rax
-    lock add [samples], rax
-    ; the texts, unescaped, and the id
-    mov ecx, [r15+CU_TLEN]
-    call room
-    mov [rdi+UT_TEXT], rdx
-    mov rcx, [r15+CU_TEXT]
-    mov edx, [r15+CU_TLEN]
-    add rdx, rcx
-    mov r8, rax
-    mov [rsp+40], rax
-    call unesc
-    sub rax, [rsp+40]
-    mov [rdi+UT_TLEN], eax
-    add [rbx+B_N], rax
-    mov ecx, [r15+CU_NLEN]
-    call room
-    mov [rdi+UT_NORM], rdx
-    mov rcx, [r15+CU_NORM]
-    mov edx, [r15+CU_NLEN]
-    add rdx, rcx
-    mov r8, rax
-    mov [rsp+40], rax
-    call unesc
-    sub rax, [rsp+40]
-    mov [rdi+UT_NLEN], eax
-    add [rbx+B_N], rax
-    mov ecx, [r15+CU_ILEN]
-    call room
-    mov [rdi+UT_ID], rdx
-    mov ecx, [r15+CU_ILEN]
-    mov [rdi+UT_ILEN], ecx
-    add [rbx+B_N], rcx
-    push rsi
-    push rdi
-    mov rdi, rax
-    mov rsi, [r15+CU_ID]
-    rep movsb
-    pop rdi
-    pop rsi
+    lea rdi, [rsp+304]
+    mov [rdi+UA_N], rcx
+    lock add [samples], rcx
+    mov rdx, [rbx+SW_SIZE+FD_PCM]
+    lea rdx, [rdx+rax*2]
+    mov [rdi+UA_PCM], rdx
+    mov rax, [r15+CU_TEXT]
+    mov [rdi+UA_TEXT], rax
+    mov eax, [r15+CU_TLEN]
+    mov [rdi+UA_TLEN], eax
+    mov rax, [r15+CU_NORM]
+    mov [rdi+UA_NORM], rax
+    mov eax, [r15+CU_NLEN]
+    mov [rdi+UA_NLEN], eax
+    mov rax, [r15+CU_ID]
+    mov [rdi+UA_ID], rax
+    mov eax, [r15+CU_ILEN]
+    mov [rdi+UA_ILEN], eax
     mov eax, [r15+CU_SPK]
-    mov [rdi+UT_SPK], eax
-    mov dword [rdi+UT_SRC], SRC_HEAVY
-    inc qword [rbx+B_NIDX]
+    mov [rdi+UA_SPK], eax
+    mov dword [rdi+UA_SRC], SRC_HEAVY
+    mov dword [rdi+UA_ESC], 1
+    mov rcx, rbx
+    mov rdx, rdi
+    call sw_add
     lock inc qword [utts]
 .nextcut:
     add r15, CU_SIZE
-    dec qword [rsp+32]
+    dec qword [rsp+296]
     jmp .cut
 .chdone:
-    mov rcx, [rbx+B_FD+FD_PCM]
+    mov rcx, [rbx+SW_SIZE+FD_PCM]
     call mem_free
 .nextch:
     lock inc qword [done]
     call status
     inc r13
     jmp .chapter
-
 .finish:
-    ; index, then the trailer
-    mov rsi, [rbx+B_NIDX]
-    imul rsi, rsi, UT_SIZE
-    call flushb
-    mov rax, [rbx+B_OFF]
-    mov [rsp+40], rax
-    mov rcx, [rbx+B_FILE]
-    mov rdx, [rbx+B_IDX]
-    mov r8, rsi
-    test r8, r8
-    jz .noidx
-    call file_write
-    add [rbx+B_OFF], rsi
-.noidx:
-    mov rdi, [rbx+B_BUF]
-    xor eax, eax
-    mov ecx, SH_SIZE / 8
-    rep stosq
-    mov rdi, [rbx+B_BUF]
-    mov rax, 'MVSHARD1'
-    mov [rdi+SH_MAGIC], rax
-    mov rax, [rbx+B_NIDX]
-    mov [rdi+SH_COUNT], rax
-    mov rax, [rsp+40]
-    mov [rdi+SH_INDEX], rax
-    mov rax, [rbx+B_SAMP]
-    mov [rdi+SH_SAMPLES], rax
-    mov dword [rdi+SH_RATE], RATE
-    mov qword [rbx+B_N], SH_SIZE
-    call flushb
-    mov rcx, [rbx+B_FILE]
-    call file_flush
-    mov rcx, [rbx+B_FILE]
-    call file_close
-    lea rcx, [rbx+B_TMP]
-    lea rdx, [rbx+B_PATH]
-    call file_replace
-    test eax, eax
-    jnz .renamed
-    lea rcx, [e_write]
-    call fatal
-.renamed:
+    mov rcx, rbx
+    call sw_close
     lock inc qword [written]
-    mov rcx, [rbx+B_IDX]
-    call mem_free
-    mov rcx, [rbx+B_BUF]
-    call mem_free
     mov rcx, rbx
     call mem_free
-    add rsp, 48
+    add rsp, 336 + UA_SIZE + 8
     pop r15
     pop r14
     pop r13

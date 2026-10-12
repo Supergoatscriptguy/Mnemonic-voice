@@ -8,6 +8,7 @@ bits 64
 MAXDEPTH equ 32
 
 section .rdata
+widths  dd 0, 4, 8, 12, 4, 8      ; plain sizes of BOOLEAN (bits) .. DOUBLE
 e_magic  db "not a parquet file", 0
 e_deep   db "parquet schema nested too deep", 0
 e_codec  db "parquet: unsupported codec", 0
@@ -939,6 +940,80 @@ plain_ba:
     lea rcx, [e_vals]
     call fatal
 
+; plain values of the leaf's own type (r14 = LF; r12 = col, for the arena):
+; byte arrays carry a u32 length each, fixed width types sit back to back, booleans
+; are bits, lsb first, and get one byte each in the arena so they can be pointed at.
+; rcx = data, rdx = end, r8 = out (ptr, len) pairs, r9 = count. rax = where it stopped
+plainv:
+    mov rax, [r14+LF_SE]
+    mov eax, [rax+SE_TYPE]
+    cmp eax, 6                  ; BYTE_ARRAY
+    je plain_ba
+    test eax, eax
+    jz .bool
+    cmp eax, 5
+    ja .bad                     ; FIXED_LEN_BYTE_ARRAY would need the schema's length
+    lea r10, [widths]
+    mov r10d, [r10+rax*4]       ; INT32 4, INT64 8, INT96 12, FLOAT 4, DOUBLE 8
+.fixed:
+    test r9, r9
+    jz .done
+    lea rax, [rcx+r10]
+    cmp rax, rdx
+    ja .bad
+    mov [r8], rcx
+    mov [r8+8], r10
+    mov rcx, rax
+    add r8, 16
+    dec r9
+    jmp .fixed
+.done:
+    mov rax, rcx
+    ret
+.bool:
+    push rsi
+    push rdi
+    push rbx
+    sub rsp, 32
+    mov rsi, rcx
+    mov rdi, r8
+    mov rbx, r9
+    mov rdx, r9
+    call colalloc
+    xor ecx, ecx
+.bit:
+    cmp rcx, rbx
+    jae .bits
+    mov rdx, rcx
+    shr rdx, 3
+    movzx edx, byte [rsi+rdx]
+    mov r8d, ecx
+    and r8d, 7
+    xchg rcx, r8
+    shr edx, cl
+    xchg rcx, r8
+    and edx, 1
+    mov [rax+rcx], dl
+    lea rdx, [rax+rcx]
+    mov [rdi], rdx
+    mov qword [rdi+8], 1
+    add rdi, 16
+    inc rcx
+    jmp .bit
+.bits:
+    lea rax, [rbx+7]
+    shr rax, 3
+    add rax, rsi
+    add rsp, 32
+    pop rbx
+    pop rdi
+    pop rsi
+    ret
+.bad:
+    sub rsp, 40
+    lea rcx, [e_vals]
+    call fatal
+
 ; locals for pq_chunk, above the stack arg slots
 L_PH    equ 48
 L_END   equ 96
@@ -1059,7 +1134,7 @@ pq_chunk:
     add rdx, rcx
     mov r8, [rsp+L_DICT]
     mov r9, [rsp+L_NDICT]
-    call plain_ba
+    call plainv
     jmp .page
 
 .v1:
@@ -1203,7 +1278,7 @@ pq_chunk:
     shl r8, 4
     add r8, [r12+COL_VALS]
     mov r9, [rsp+L_NN]
-    call plain_ba
+    call plainv
     add rbp, [rsp+L_NN]
     jmp .page
 

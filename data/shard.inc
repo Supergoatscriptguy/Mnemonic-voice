@@ -26,6 +26,36 @@ UT_SIZE     equ 64
 
 ; shard.asm
 extern shard_open, shard_close
+; shardw.asm
+extern sw_open, sw_add, sw_close, json_unesc
+
+; a shard being written (sw_open wants it zeroed)
+SW_FILE     equ 0
+SW_BUF      equ 8
+SW_N        equ 16          ; bytes in the buffer
+SW_OFF      equ 24          ; the file offset of the buffer's first byte
+SW_IDX      equ 32          ; index entries so far
+SW_NIDX     equ 40
+SW_CAP      equ 48
+SW_SAMP     equ 56
+SW_PATH     equ 64
+SW_TMP      equ 328
+SW_FE       equ 592         ; FE (flacenc), 16 bytes
+SW_SIZE     equ 608
+
+; one utterance for sw_add
+UA_PCM      equ 0           ; int16 samples, 16 kHz mono
+UA_N        equ 8
+UA_TEXT     equ 16          ; each of these three is (ptr, u32 length)
+UA_TLEN     equ 24
+UA_NORM     equ 32
+UA_NLEN     equ 40
+UA_ID       equ 48
+UA_ILEN     equ 56
+UA_SPK      equ 60
+UA_SRC      equ 64
+UA_ESC      equ 68          ; 1 = text and norm are json escaped
+UA_SIZE     equ 72
 
 ; an open shard
 SR_BASE     equ 0           ; the mapped file
