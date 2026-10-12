@@ -198,13 +198,35 @@ room:
     add rsp, 40
     ret
 
-; rbx = SW, rcx = bytes, rdx = how many. rax = their file offset
+; rbx = SW, rcx = bytes, rdx = how many. rax = their file offset. anything too big
+; for the buffer (minutes of audio) goes straight to the file
 copyin:
     push rsi
     push rdi
     sub rsp, 40
     mov rsi, rcx
     mov rdi, rdx
+    cmp rdx, WBUF / 2
+    jb .buffered
+    call flushb
+    mov rax, [rbx+SW_OFF]
+    mov [rsp+32], rax
+    mov rcx, [rbx+SW_FILE]
+    mov rdx, rsi
+    mov r8, rdi
+    call file_write
+    test eax, eax
+    jnz .direct
+    lea rcx, [e_write]
+    call fatal
+.direct:
+    add [rbx+SW_OFF], rdi
+    mov rax, [rsp+32]
+    add rsp, 40
+    pop rdi
+    pop rsi
+    ret
+.buffered:
     mov rcx, rdx
     call room
     mov [rsp+32], rdx
