@@ -21,7 +21,8 @@ LD_MEAN     equ 120             ; f32[80], the mel normalization (ld_norm)
 LD_ISTD     equ 440             ; f32[80], 1 / std
 LD_ALL      equ 760             ; 0 = training shards (not dev*, test*, valid*), 1 = every
                                 ;   shard, 2 = only the held-out ones
-LD_SIZE     equ 768
+LD_NAMES    equ 768             ; -> the shards' paths (char*[NSH]), for reports
+LD_SIZE     equ 776
 
 ; a kept utterance
 UR_SH       equ 0               ; u16 shard

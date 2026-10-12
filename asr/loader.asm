@@ -101,6 +101,9 @@ ld_add:
     mov ecx, MAXSH * SR_SIZE
     call mem_alloc
     mov [rbx+LD_SH], rax
+    mov ecx, MAXSH * 8
+    call mem_alloc
+    mov [rbx+LD_NAMES], rax
 .have:
     lea rcx, [pattern]
     mov rdx, rsi
@@ -142,6 +145,27 @@ ld_add:
     call shard_open
     test eax, eax
     jz .next
+    ; keep its path (file_find's buffer gets reused)
+    mov rcx, [rsi]
+    xor edx, edx
+.len:
+    cmp byte [rcx+rdx], 0
+    je .lend
+    inc rdx
+    jmp .len
+.lend:
+    lea rcx, [rdx+1]
+    call mem_alloc
+    mov rdx, [rbx+LD_NAMES]
+    mov [rdx+r12*8], rax
+    mov rcx, [rsi]
+.cp:
+    mov dl, [rcx]
+    mov [rax], dl
+    inc rcx
+    inc rax
+    test dl, dl
+    jnz .cp
     inc qword [rbx+LD_NSH]
 .next:
     add rsi, 8

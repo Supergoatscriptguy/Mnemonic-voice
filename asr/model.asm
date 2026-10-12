@@ -57,6 +57,7 @@ kn_lsm     db "lsm", 0
 kn_alpha   db "ctc_alpha", 0
 kn_beta    db "ctc_beta", 0
 kn_cgrad   db "ctc_grad", 0
+kn_argmax  db "argmax", 0
 
 ck_layer   db "n_layer", 0
 ck_d       db "d_model", 0
@@ -179,6 +180,7 @@ k_lsm      resq 1
 k_alpha    resq 1
 k_beta     resq 1
 k_cgrad    resq 1
+k_argmax   resq 1
 
 section .text
 
@@ -399,7 +401,8 @@ fl_conv dq kn_glu, k_glu, kn_glub, k_glub, kn_silu, k_silu, kn_silub, k_silub
         dq kn_dwc, k_dwc, kn_dwcx, k_dwcx, kn_dwcw, k_dwcw, 0
 fl_sub  dq kn_sconv, k_sconv, kn_sconvx, k_sconvx, kn_sconvw, k_sconvw
         dq kn_relu, k_relu, kn_relub, k_relub, 0
-fl_ctc  dq kn_lsm, k_lsm, kn_alpha, k_alpha, kn_beta, k_beta, kn_cgrad, k_cgrad, 0
+fl_ctc  dq kn_lsm, k_lsm, kn_alpha, k_alpha, kn_beta, k_beta, kn_cgrad, k_cgrad
+        dq kn_argmax, k_argmax, 0
 section .text
 
 ; rcx = bytes. device memory, counted in vram
@@ -2302,6 +2305,21 @@ model_step:
     add rsp, 56
     pop rsi
     pop rbx
+    ret
+
+; rcx = device u32 [M]: each encoder frame's most likely token, from the logits of
+; the last model_fwd (greedy decoding)
+global model_argmax
+model_argmax:
+    sub rsp, 40
+    KF k_argmax
+    karg 0, [d_logits]
+    karg 1, rcx
+    karg 2, [cur_m]
+    karg 3, [mdl+MD_V]
+    mov rcx, [cur_m]
+    call rows8
+    add rsp, 40
     ret
 
 ; a line about the model: params, flops per frame, memory
