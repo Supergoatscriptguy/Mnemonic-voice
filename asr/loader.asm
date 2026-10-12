@@ -118,12 +118,20 @@ ld_add:
 .shard:
     test rdi, rdi
     jz .out
-    cmp qword [rbx+LD_ALL], 0
-    jne .open
+    mov rax, [rbx+LD_ALL]
+    cmp rax, 1
+    je .open
+    mov r12, rax                ; 0: training shards, 2: held-out ones
     mov rcx, [rsi]
     call training
+    cmp r12, 2
+    je .held
     test eax, eax
     jz .next
+    jmp .open
+.held:
+    test eax, eax
+    jnz .next
 .open:
     mov r12, [rbx+LD_NSH]
     cmp r12, MAXSH

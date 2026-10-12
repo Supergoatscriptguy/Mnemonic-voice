@@ -107,6 +107,8 @@ cur_r2     resq 1               ; rows of the front end's pointwise matmuls: B*T
 cur_r3     resq 1               ;   and B*T3*F3
 scale      resd 1               ; 1/sqrt(hd)
 fe_k3      resq 1               ; F3 * C0, the width going into WL
+fe_r1max   resq 1               ; utterances * frames the front end's buffers hold
+fe_r2max   resq 1               ;   after the first and second convs
 
 d_params   resq 1               ; f32 master weights
 d_bf       resq 1               ; bf16 copy for the matmuls
@@ -702,14 +704,18 @@ model_setup:
     inc rax
     shr rax, 1
     mov rdi, rax                ; T1
-    imul rax, [mdl+MD_F1]
     imul rax, [mdl+MD_B]
+    mov [fe_r1max], rax         ; utterances * frames these hold
+    imul rax, [mdl+MD_F1]
     imul rax, [mdl+MD_C0]
     imul rax, r13
     mov [rsp+32], rax           ; a1 bytes
     mov rax, rdi
     inc rax
     shr rax, 1                  ; T2
+    mov rcx, rax
+    imul rcx, [mdl+MD_B]
+    mov [fe_r2max], rcx
     imul rax, [mdl+MD_F2]
     imul rax, [mdl+MD_B]
     imul rax, [mdl+MD_C0]
@@ -1782,11 +1788,21 @@ model_fwd:
     mov rbx, rcx
     mov r12d, edx
     call mbsize
-    mov rax, [cur_b]
-    cmp rax, [mdl+MD_B]
-    ja .big
+    ; it has to fit what model_setup sized: frames an utterance, and the rows at
+    ; every stage (many short utterances are as fine as a few long ones)
     mov rax, [cur_tm]
     cmp rax, [mdl+MD_T]
+    ja .big
+    mov rax, [cur_t1]
+    imul rax, [cur_b]
+    cmp rax, [fe_r1max]
+    ja .big
+    mov rax, [cur_t2]
+    imul rax, [cur_b]
+    cmp rax, [fe_r2max]
+    ja .big
+    mov rax, [cur_m]
+    cmp rax, [mdl+MD_M]
     ja .big
     mov eax, [rbx+MB_UMAX]
     cmp rax, [mdl+MD_UMAX]
