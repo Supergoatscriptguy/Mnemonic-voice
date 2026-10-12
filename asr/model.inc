@@ -3,7 +3,7 @@
 
 extern model_config, model_setup, model_init, model_cast, model_fwd, model_bwd, model_adam0
 extern model_zero, model_step, model_summary, model_argmax
-extern mdl, mdl_fast, lp, fe, d_params, d_bf, d_grad, d_adm, d_adv, d_logits, d_gn
+extern mdl, mdl_fast, lp, fe, d_params, d_bf, d_grad, d_adm, d_adv, d_logits, d_gn, d_lp, model_lsm
 
 ; mdl: the config plus everything derived from it. all u64
 MD_L      equ 0                 ; conformer blocks

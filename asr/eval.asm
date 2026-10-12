@@ -1,4 +1,4 @@
-; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4] [chunk=0]
+; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4] [chunk=0] [beam=0 topk=8 lm=FILE alpha=0.2 beta=1.5]
 ; scores a checkpoint (the newest of the preset's run unless ckpt= says) on
 ; held-out speech: ctc loss per label, and word error rate by greedy decoding, as
 ; written (case and punctuation count) and normalized (lower case, no punctuation),
@@ -6,7 +6,9 @@
 ; the trainer's; held=0 takes every shard in the directories, not just
 ; dev*/test*/valid*. show= prints that many reference/hypothesis pairs. chunk=N
 ; scores it streaming: attention in chunks of N encoder frames (80 ms each)
-; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\score asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
+; beam=W decodes with the ctc prefix beam search instead of greedy (topk= new tokens
+; a frame), with lm=FILE's word trigrams (weight alpha=, word bonus beta=) if given
+; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\score asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok asr\beam asr\lm
 default rel
 bits 64
 %include "lib.inc"
@@ -16,8 +18,10 @@ bits 64
 %include "asr/model.inc"
 %include "asr/loader.inc"
 %include "asr/train.inc"
+%include "asr/lm.inc"
 
 extern ctc_greedy, words, wdist
+extern beam_decode, bm_width, bm_topk, bm_alpha, bm_beta, bm_lm
 
 MAXDIRS equ 16
 MAXSH   equ 4096
@@ -41,6 +45,12 @@ k_maxsec db "max_sec", 0
 k_frames db "frames", 0
 k_maxb   db "maxb", 0
 k_fast   db "fast", 0
+k_beam   db "beam", 0
+k_topk   db "topk", 0
+k_lm     db "lm", 0
+k_alpha  db "alpha", 0
+k_beta   db "beta", 0
+e_lm     db "can't load that language model", 0
 k_bf16   db "bf16", 0
 e_preset db "no such preset (asr\<name>.cfg)", 0
 e_tok    db "can't load the tokenizer (datasets\sptok.bin)", 0
@@ -75,6 +85,10 @@ d_loss   resq 1
 d_best   resq 1
 hloss    resq 1
 hbest    resq 1
+beamw    resq 1
+hlp      resq 1                 ; log probabilities for the beam search
+lmpath   resq 1
+lmst     resb LM_SIZE
 hdr      resb CK_SIZE
 path     resb 512
 pattern  resb 512
@@ -285,10 +299,12 @@ one:
     lea rcx, [s_loss]
     addsd xmm0, [rcx+r13*8]
     movsd [rcx+r13*8], xmm0
-    ; hypothesis: greedy over its frames
+    ; hypothesis: greedy over its frames, or the beam search
     mov eax, [hb+HB_T]
     shr eax, 3
     imul eax, r12d
+    cmp qword [beamw], 0
+    jne .beam
     mov rcx, [hbest]
     lea rcx, [rcx+rax*4]
     mov rax, [hb+HB_TL]
@@ -297,6 +313,16 @@ one:
     dec r8d
     lea r9, [htok]
     call ctc_greedy
+    jmp .hyp
+.beam:
+    imul rax, VOCAB * 4
+    mov rcx, [hlp]
+    add rcx, rax
+    mov rax, [hb+HB_TL]
+    mov edx, [rax+r12*4]
+    lea r8, [htok]
+    call beam_decode
+.hyp:
     lea rcx, [htok]
     mov rdx, rax
     lea r8, [htext]
@@ -459,6 +485,54 @@ start:
     geti held, k_held, 1
     geti show, k_show, 4
     geti chunk, k_chunk, 0
+    ; beam=W: the beam search instead of greedy, with lm= (alpha, beta) if given
+    geti beamw, k_beam, 0
+    cmp qword [beamw], 0
+    je .nobeam
+    mov rax, [beamw]
+    mov ecx, 32
+    cmp rax, rcx
+    cmova rax, rcx
+    mov [beamw], rax
+    mov [bm_width], rax
+    lea rcx, [k_topk]
+    mov edx, 8
+    call cfg_int
+    mov ecx, 15
+    cmp rax, rcx
+    cmova rax, rcx
+    mov [bm_topk], rax
+    lea rcx, [k_alpha]
+    mov rax, __?float64?__(0.2)
+    movq xmm1, rax
+    call cfg_float
+    movsd [bm_alpha], xmm0
+    xor eax, eax                ; no word bonus without a language model
+    mov [bm_beta], rax
+    lea rcx, [k_lm]
+    xor edx, edx
+    call cfg_str
+    test rax, rax
+    jz .nobeam
+    cmp byte [rax], 0
+    je .nobeam
+    mov [lmpath], rax
+    mov rcx, rax
+    lea rdx, [lmst]
+    call lm_load
+    test eax, eax
+    jnz .lmok
+    lea rcx, [e_lm]
+    call fatal
+.lmok:
+    lea rax, [lmst]
+    mov [bm_lm], rax
+    lea rcx, [k_beta]
+    mov rax, __?float64?__(1.5)
+    movq xmm1, rax
+    call cfg_float
+    movsd [bm_beta], xmm0
+.nobeam:
     mov rax, [fast]
     and eax, PL_FAST
     or eax, PL_ALL
@@ -649,6 +723,13 @@ start:
     mov rcx, rbx
     call gpu_alloc
     mov [d_best], rax
+    cmp qword [beamw], 0
+    je .nohlp
+    mov rcx, [mdl+MD_M]
+    imul rcx, VOCAB * 4
+    call gpu_host
+    mov [hlp], rax
+.nohlp:
     mov rax, [d_mel]
     mov [mb+MB_MEL], rax
     mov rax, [d_lab]
@@ -695,6 +776,17 @@ start:
     imul r8d, eax
     shl r8, 2
     call gpu_down
+    cmp qword [beamw], 0
+    je .nolp
+    mov rcx, [hlp]              ; the beam search wants every log probability
+    mov rdx, [d_lp]
+    mov r8d, [hb+HB_B]
+    mov eax, [hb+HB_T]
+    shr eax, 3
+    imul r8d, eax
+    imul r8, VOCAB * 4
+    call gpu_down
+.nolp:
     imul rdi, r12, MP_SIZE
     add rdi, [va+LD_B]
     mov ebx, [rdi+MP_SKIP]

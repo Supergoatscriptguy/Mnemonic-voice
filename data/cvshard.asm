@@ -1,6 +1,7 @@
 ; cvshard tar=X.tar out=DIR [shards=0] [threads=0]
-; common voice -> our shards. scripted speech: validated.tsv's clips, less any clip
-; or speaker that's in dev.tsv or test.tsv, go to DIR\NNNN.shard, and dev.tsv and
+; common voice -> our shards. scripted speech: validated.tsv's clips, less any clip,
+; speaker or sentence that's in dev.tsv or test.tsv (many people read the same
+; sentences), go to DIR\NNNN.shard, and dev.tsv and
 ; test.tsv to DIR\dev.shard and DIR\test.shard. spontaneous speech (an
 ; ss-corpus-*.tsv): its split column says which, clips with no split stay out.
 ; each mp3 is decoded, resampled to 16 kHz and encoded with our flac. transcripts
@@ -757,9 +758,16 @@ readheld:
     mov rax, [cpath]
     cmp rax, [nfld]
     jae .l
+    mov rax, [ctext]
+    cmp rax, [nfld]
+    jae .l
+    mov rax, [cpath]
     call fieldhash
     call sadd
     mov rax, [cspk]
+    call fieldhash
+    call sadd
+    mov rax, [ctext]            ; and the sentence: others read it too
     call fieldhash
     call sadd
     mov ecx, ebx
@@ -800,6 +808,13 @@ readtrain:
     test eax, eax
     jnz .l
     mov rax, [cspk]
+    call fieldhash
+    call shas
+    test eax, eax
+    jnz .l
+    mov rax, [ctext]
+    cmp rax, [nfld]
+    jae .l
     call fieldhash
     call shas
     test eax, eax

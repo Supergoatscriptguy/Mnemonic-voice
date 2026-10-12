@@ -999,7 +999,7 @@ score1:
     push rdi
     push r12
     push r13
-    sub rsp, 32
+    sub rsp, 48
     mov r12d, ecx
     mov r13d, edx
     ; hypothesis
@@ -1048,18 +1048,18 @@ score1:
     mov r8d, ebx
     lea r9, [rwd]
     call words
-    mov [rsp+24+32], rax        ; (home slot: reference words)
+    mov [rsp+32], rax           ; reference words
     lea rcx, [htext]
     mov rdx, rsi
     mov r8d, ebx
     lea r9, [hwd]
     call words
     lea rcx, [rwd]
-    mov rdx, [rsp+24+32]
+    mov rdx, [rsp+32]
     lea r8, [hwd]
     mov r9, rax
     call wdist
-    mov rdx, [rsp+24+32]
+    mov rdx, [rsp+32]
     test ebx, ebx
     jnz .norm
     add [vs_ex], rax
@@ -1096,7 +1096,7 @@ score1:
     lea rcx, [ps]
     call prog_msg
 .out:
-    add rsp, 32
+    add rsp, 48
     pop r13
     pop r12
     pop rdi

@@ -1,4 +1,4 @@
-; live PRESET [ckpt=PATH] [secs=30] [every=400] [chunk=0] [agc=1] [level=-21] [wav=FILE]
+; live PRESET [ckpt=PATH] [secs=30] [every=400] [chunk=0] [agc=1] [level=-21] [wav=FILE] [beam=0 lm=FILE]
 ; dictation, live: the default mic through the speech model while you talk. every
 ; `every` ms the utterance so far goes through the encoder (all of it, again: the
 ; simple way, before the encoder keeps state between chunks) and its greedy
@@ -6,8 +6,9 @@
 ; starts. chunk=N attends in chunks of N encoder frames, as streaming would.
 ; agc: the speech is brought to `level` dBFS first (the training audio's speech sits
 ; around -21, a headset mic can be 20 dB under). wav=FILE: that file instead of the
-; mic, through the same path. ctrl+c stops
-; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\score audio\dev audio\resample audio\mel audio\wav audio\level tokenizer\pretok tokenizer\bpe tokenizer\tok
+; mic, through the same path. beam=W lm=FILE [alpha=0.2 beta=1.5 topk=8]: the beam
+; search with the word model instead of greedy. ctrl+c stops
+; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\score audio\dev audio\resample audio\mel audio\wav audio\level tokenizer\pretok tokenizer\bpe tokenizer\tok asr\beam asr\lm
 ; libs: ole32.lib
 default rel
 bits 64
@@ -17,8 +18,10 @@ bits 64
 %include "tokenizer/tok.inc"
 %include "asr/model.inc"
 %include "asr/train.inc"
+%include "asr/lm.inc"
 
 extern ctc_greedy
+extern beam_decode, bm_width, bm_topk, bm_alpha, bm_beta, bm_lm
 
 section .rdata
 s_asr    db "asr\", 0
@@ -34,6 +37,12 @@ k_every  db "every", 0
 k_chunk  db "chunk", 0
 k_agc    db "agc", 0
 k_level  db "level", 0
+k_beam   db "beam", 0
+k_topk   db "topk", 0
+k_lm     db "lm", 0
+k_alpha  db "alpha", 0
+k_beta   db "beta", 0
+e_lm     db "can't load that language model", 0
 k_wav    db "wav", 0
 e_wav    db "can't read that wav", 0
 e_preset db "no such preset (asr\<name>.cfg)", 0
@@ -69,6 +78,9 @@ agc      resq 1
 target   resq 1                 ; dBFS
 gain     resq 1                 ; f64 dB, the last one used
 whole    resq 1                 ; show all of the transcript (a file), not its end
+beamw    resq 1
+hlp      resq 1                 ; log probabilities for the beam search
+lmst     resb LM_SIZE
 fmean    resd 4096
 fsort    resd 4096
 bsum     resd 8
@@ -391,6 +403,8 @@ listen:
     lea rcx, [mb]
     mov edx, FW_LOGITS
     call model_fwd
+    cmp qword [beamw], 0
+    jne .beam
     mov rcx, [d_best]
     call model_argmax
     mov rcx, [hbest]
@@ -404,6 +418,19 @@ listen:
     dec r8d
     lea r9, [toks]
     call ctc_greedy
+    jmp .decode
+.beam:
+    call model_lsm
+    mov rcx, [hlp]
+    mov rdx, rax
+    mov r8d, [tl]
+    imul r8, VOCAB * 4
+    call gpu_down
+    mov rcx, [hlp]
+    mov edx, [tl]
+    lea r8, [toks]
+    call beam_decode
+.decode:
     lea rcx, [toks]
     mov rdx, rax
     lea r8, [text]
@@ -487,6 +514,53 @@ start:
     mov edx, -21
     call cfg_int
     mov [target], rax
+    ; beam=W: the beam search, with lm= if given
+    lea rcx, [k_beam]
+    xor edx, edx
+    call cfg_int
+    mov ecx, 32
+    cmp rax, rcx
+    cmova rax, rcx
+    mov [beamw], rax
+    test rax, rax
+    jz .nobeam
+    mov [bm_width], rax
+    lea rcx, [k_topk]
+    mov edx, 8
+    call cfg_int
+    mov ecx, 15
+    cmp rax, rcx
+    cmova rax, rcx
+    mov [bm_topk], rax
+    lea rcx, [k_alpha]
+    mov rax, __?float64?__(0.2)
+    movq xmm1, rax
+    call cfg_float
+    movsd [bm_alpha], xmm0
+    mov qword [bm_beta], 0
+    lea rcx, [k_lm]
+    xor edx, edx
+    call cfg_str
+    test rax, rax
+    jz .nobeam
+    cmp byte [rax], 0
+    je .nobeam
+    mov rcx, rax
+    lea rdx, [lmst]
+    call lm_load
+    test eax, eax
+    jnz .lmok
+    lea rcx, [e_lm]
+    call fatal
+.lmok:
+    lea rax, [lmst]
+    mov [bm_lm], rax
+    lea rcx, [k_beta]
+    mov rax, __?float64?__(1.5)
+    movq xmm1, rax
+    call cfg_float
+    movsd [bm_beta], xmm0
+.nobeam:
     call ctrlc_init
     call gpu_init
     xor ecx, ecx
@@ -599,6 +673,10 @@ start:
     mov rcx, rbx
     call gpu_alloc
     mov [d_best], rax
+    mov rcx, [mdl+MD_T3]
+    imul rcx, VOCAB * 4
+    call gpu_host
+    mov [hlp], rax
 
     ; wav=: a file instead, once
     lea rcx, [k_wav]

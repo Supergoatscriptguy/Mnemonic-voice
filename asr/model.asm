@@ -92,7 +92,7 @@ c_onef     dd 1.0
 
 section .bss
 alignb 8
-global mdl, mdl_fast, lp, fe, d_params, d_bf, d_grad, d_adm, d_adv, d_logits, d_gn
+global mdl, mdl_fast, lp, fe, d_params, d_bf, d_grad, d_adm, d_adv, d_logits, d_gn, d_lp
 mdl        resb MD_SIZE
 fe         resb FR_SIZE
 mdl_fast   resd 1
@@ -2462,6 +2462,24 @@ model_argmax:
     karg 3, [mdl+MD_V]
     mov rcx, [cur_m]
     call rows8
+    add rsp, 40
+    ret
+
+; the last forward's logits as log probabilities, in d_lp (a FW_LOSS forward has
+; put them there already). rax = d_lp
+global model_lsm
+model_lsm:
+    sub rsp, 40
+    KF k_lsm
+    karg 0, [d_logits]
+    karg 1, [d_lp]
+    karg 2, [mdl+MD_V]
+    mov rcx, [cur_m]
+    mov edx, 1
+    mov r8d, 256
+    mov r9d, 1
+    call launch
+    mov rax, [d_lp]
     add rsp, 40
     ret
 

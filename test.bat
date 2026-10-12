@@ -4,20 +4,20 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn flash encoder fastpath wer fft mp3) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn flash encoder fastpath wer fft mp3 beam) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
 for %%t in (tone wavinfo play rec convert) do (
     call .\build.bat audio\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
-for %%t in (fetch pqinfo pqcat audinfo heavy shards pqshard gunzip wavshard chars) do (
+for %%t in (fetch pqinfo pqcat audinfo heavy shards pqshard gunzip wavshard chars cvshard) do (
     call .\build.bat data\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 for %%t in (gpuinfo gpubench) do (
     call .\build.bat gpu\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
-for %%t in (sptok batch train eval) do (
+for %%t in (sptok batch train eval live lmbuild) do (
     call .\build.bat asr\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 if %BAD%==1 goto done
@@ -70,6 +70,8 @@ echo == fft and convolution
 bin\fft.exe || set BAD=1
 echo == mp3 against the decoder windows ships
 bin\mp3.exe || set BAD=1
+echo == ctc beam search against brute force
+bin\beam.exe || set BAD=1
 
 :done
 echo.
