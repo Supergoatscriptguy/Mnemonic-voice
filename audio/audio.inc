@@ -76,6 +76,25 @@ RS_NIN      equ 64          ; u64, inputs so far
 RS_NOUT     equ 72          ; u64, outputs so far
 RS_SIZE     equ 80
 
+; mel.asm
+extern mel_init, mel_power, mel_apply, mel_run, hz2mel, mel2hz
+
+MEL_N       equ 80          ; filters
+MEL_WINLEN  equ 400         ; 25 ms
+MEL_HOP     equ 160         ; 10 ms
+; the tables mel_init fills
+MEL_WIN     equ 0           ; f32[400] periodic hann
+MEL_TWC     equ 1600        ; f32[128] cos, 256 point fft twiddles
+MEL_TWS     equ 2112        ; f32[128] sin
+MEL_RC      equ 2624        ; f32[257] cos(2 pi k / 512) for the real split
+MEL_RS      equ 3664        ; f32[257] sin
+MEL_REV     equ 4704        ; u16[256] 8 bit reversal
+MEL_FB0     equ 5216        ; u16[80] each filter's first bin
+MEL_FBN     equ 5376        ; u16[80] how many bins it has
+MEL_FBW     equ 5536        ; u32[80] where its weights start in MEL_W
+MEL_W       equ 5856        ; f32 weights, all filters back to back
+MEL_SIZE    equ MEL_W + 4096
+
 ; a decoded clip: f32 samples, interleaved, -1..1
 CL_DATA     equ 0           ; mem_alloc'd
 CL_FRAMES   equ 8           ; u64

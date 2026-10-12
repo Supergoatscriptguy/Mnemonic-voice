@@ -4,7 +4,7 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
@@ -38,6 +38,8 @@ echo == flac and md5
 bin\flac.exe || set BAD=1
 echo == flac encoder
 bin\flacenc.exe || set BAD=1
+echo == fft and log-mel
+bin\mel.exe || set BAD=1
 
 :done
 echo.
