@@ -267,11 +267,13 @@ locate:
 ; can't be used). keeps rdx
 cleanit:
     push rbx
-    sub rsp, 32
+    push rsi
+    sub rsp, 40
     mov rbx, rdx
-    mov r8, r9
-    imul r8, CLEANS
-    add r8, [th_cln]
+    mov rsi, r9
+    imul rsi, CLEANS
+    add rsi, [th_cln]
+    mov r8, rsi
     mov rcx, [rbx+UT_TEXT]
     add rcx, [rax+SR_BASE]
     mov edx, [rbx+UT_TLEN]
@@ -280,12 +282,40 @@ cleanit:
     call clean_text
     test rax, rax
     jle .no
-    jmp .out
+    ; held-out sets: an all-caps reference (LibriSpeech) has no case to keep, and the
+    ; cased tokens would spell it out nearly letter by letter, too dense for ctc
+    mov rcx, [ix_ld]
+    cmp qword [rcx+LD_ALL], 0
+    je .out
+    xor ecx, ecx
+.lc:
+    cmp rcx, rax
+    jae .fold
+    mov dl, [rsi+rcx]
+    sub dl, 'a'
+    cmp dl, 25
+    jbe .out
+    inc rcx
+    jmp .lc
+.fold:
+    xor ecx, ecx
+.f:
+    cmp rcx, rax
+    jae .out
+    mov dl, [rsi+rcx]
+    sub dl, 'A'
+    cmp dl, 25
+    ja .fn
+    add byte [rsi+rcx], 32
+.fn:
+    inc rcx
+    jmp .f
 .no:
     mov rax, -1
 .out:
     mov rdx, rbx
-    add rsp, 32
+    add rsp, 40
+    pop rsi
     pop rbx
     ret
 
@@ -983,8 +1013,8 @@ below:
 ; in one, r9 = seed, [rsp+40] = flags (PL_*). an epoch's plan: the utterances
 ; shuffled, then sorted by length a pool at a time and cut into micro-batches as
 ; full as the budget allows, the micro-batches shuffled. PL_FAST: T a multiple of
-; 128, B of 8 (a pool's last few that can't make 8 sit this epoch out).
-; rax = micro-batches
+; 128, B of 8 (a pool's last few that can't make 8 sit this epoch out, unless
+; PL_ALL). rax = micro-batches
 global ld_plan
 ld_plan:
     push rbx
@@ -1058,6 +1088,7 @@ ld_plan:
 .mb:
     cmp rsi, r13
     jae .pn
+    mov dword [pl_skip], 0
     ; augmenting: this micro-batch's speed (half the changes 0.9x, half 1.1x)
     mov dword [pl_speed], 0
     cmp qword [rbx+LD_AUG], 0
@@ -1101,9 +1132,32 @@ ld_plan:
     ; under 8: the pool's tail (sits out), or too long to take 8 (left out)
     lea rax, [rsi+r14]
     cmp rax, r13
-    jae .pn
+    jae .tail
     inc rsi
     jmp .mb
+.tail:
+    ; PL_ALL: the tail goes in an 8 that overlaps the micro-batch before, whose
+    ; last ones MP_SKIP says to pass over
+    test dword [pl_flags], PL_ALL
+    jz .pn
+    mov rax, r13
+    sub rax, r12
+    cmp rax, 8
+    jb .pn
+    mov eax, [rdi+r13*4-4]
+    imul rax, UR_SIZE
+    add rax, [rbx+LD_U]
+    mov eax, [rax+UR_N]
+    call padded
+    shl rax, 3
+    cmp rax, [pl_budget]
+    ja .pn
+    mov eax, 8
+    sub eax, r14d
+    mov [pl_skip], eax
+    lea rsi, [r13-8]
+    mov r14d, 8
+    jmp .emit
 .eights:
     and r14, -8
     jmp .emit
@@ -1118,6 +1172,8 @@ ld_plan:
     mov [r8+MP_B], r14d
     mov eax, [pl_speed]
     mov [r8+MP_SPEED], eax
+    mov eax, [pl_skip]
+    mov [r8+MP_SKIP], eax
     lea rax, [rsi+r14-1]
     mov eax, [rdi+rax*4]
     imul rax, UR_SIZE
@@ -1190,6 +1246,7 @@ pl_budget resq 1
 pl_maxb   resq 1
 pl_flags  resq 1
 pl_speed  resq 1                ; the micro-batch being cut: its speed code
+pl_skip   resq 1                ;   and how many it repeats
 section .text
 
 ; ---- ld_fill

@@ -40,6 +40,7 @@ MP_B        equ 4               ; u32 utterances
 MP_T        equ 8               ; u32 mel frames, padded
 MP_U        equ 12              ; u32 label row length (its most tokens)
 MP_SPEED    equ 16              ; u32 0 = as is, 1 = 0.9x, 2 = 1.1x (augmentation)
+MP_SKIP     equ 20              ; u32 the first ones repeat the micro-batch before (PL_ALL)
 MP_SIZE     equ 32
 
 ; a filled batch, host side (pinned, from ld_scratch)
@@ -56,3 +57,4 @@ HB_SIZE     equ 56
 
 ; ld_plan flags
 PL_FAST     equ 1               ; T a multiple of 128 and B of 8 (B*T/8 a multiple of 128)
+PL_ALL      equ 2               ; every utterance (scoring): fast tails overlap, see MP_SKIP

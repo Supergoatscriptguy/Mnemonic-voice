@@ -1228,12 +1228,13 @@ validate:
     lea rdx, [msg]
     mov r8, rax
     sub r8, rdx
+    mov rbx, r8                 ; prog_msg doesn't hand the length back
     lea rcx, [ps]
     call prog_msg
     ; and into the log
     mov rcx, [logf]
     lea rdx, [msg]
-    mov r8, rax
+    mov r8, rbx
     call file_write
     call time_now
     mov [tlog], rax

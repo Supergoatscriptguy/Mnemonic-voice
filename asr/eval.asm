@@ -461,6 +461,7 @@ start:
     geti chunk, k_chunk, 0
     mov rax, [fast]
     and eax, PL_FAST
+    or eax, PL_ALL
     mov [flags], rax
     call gpu_init
     xor ecx, ecx
@@ -584,7 +585,19 @@ start:
     movsd xmm0, [va+LD_HOURS]
     mov edx, 1
     call print_fixed
-    say " h)", 13, 10
+    say " h), left out: "
+    mov rcx, [va+LD_DROP]
+    call print_dec
+    say " cleaning, "
+    mov rcx, [va+LD_DROP+8]
+    call print_dec
+    say " too long, "
+    mov rcx, [va+LD_DROP+16]
+    call print_dec
+    say " too short, "
+    mov rcx, [va+LD_DROP+24]
+    call print_dec
+    say " too dense", 13, 10
 
     ; buffers
     mov rbx, [budget]
@@ -684,7 +697,7 @@ start:
     call gpu_down
     imul rdi, r12, MP_SIZE
     add rdi, [va+LD_B]
-    xor ebx, ebx
+    mov ebx, [rdi+MP_SKIP]
 .u:
     cmp ebx, [hb+HB_B]
     jae .mbn
