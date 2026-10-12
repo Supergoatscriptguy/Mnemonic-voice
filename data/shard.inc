@@ -69,3 +69,4 @@ SRC_HEAVY   equ 1           ; libriheavy (libri-light audio)
 SRC_VOXPOP  equ 2           ; voxpopuli
 SRC_CV      equ 3           ; common voice
 SRC_LS      equ 4           ; librispeech (the test sets)
+SRC_NOTGOLD equ 0x100       ; or'd in: voxpopuli says the transcript isn't gold
