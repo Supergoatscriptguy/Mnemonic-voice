@@ -17,6 +17,9 @@ for %%t in (fetch pqinfo pqcat audinfo heavy shards pqshard gunzip wavshard char
 for %%t in (gpuinfo gpubench) do (
     call .\build.bat gpu\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
+for %%t in (sptok batch) do (
+    call .\build.bat asr\%%t >nul || (echo build failed: %%t& set BAD=1)
+)
 if %BAD%==1 goto done
 
 bin\cpuinfo.exe
