@@ -20,6 +20,38 @@ md5k    dd 0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62
 md5iv   dd 0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476
 ; frame header sample size codes, 0 = from STREAMINFO, -1 = reserved
 sizes   dd 0, 8, 12, -1, 16, 20, 24, 32
+; crc-8 (poly 0x07) for frame headers and crc-16 (poly 0x8005) for whole frames,
+; both msb first, the tables built at assembly time
+global crc8tab, crc16tab
+crc8tab:
+%assign i 0
+%rep 256
+    %assign c i
+    %rep 8
+        %if c & 0x80
+            %assign c ((c << 1) ^ 0x07) & 0xff
+        %else
+            %assign c (c << 1) & 0xff
+        %endif
+    %endrep
+    db c
+    %assign i i+1
+%endrep
+align 2
+crc16tab:
+%assign i 0
+%rep 256
+    %assign c i << 8
+    %rep 8
+        %if c & 0x8000
+            %assign c ((c << 1) ^ 0x8005) & 0xffff
+        %else
+            %assign c (c << 1) & 0xffff
+        %endif
+    %endrep
+    dw c
+    %assign i i+1
+%endrep
 
 section .text
 
@@ -722,7 +754,8 @@ flac_decode:
     push r14
     push r15
     sub rsp, 88
-    ; locals: channel scratch +32, block size +40, channel assignment +48, digest +56
+    ; locals: channel scratch +32, block size +40, channel assignment +48, digest +56,
+    ; this frame's first byte +72
     mov rbx, r8
     mov rsi, rcx
     mov r13, rdx
@@ -769,6 +802,9 @@ flac_decode:
     cmp rax, r13
     ja .done                    ; the stream ran out: the md5 will say so
     inc qword [rbx+FD_STATS+11*8]
+    mov rax, r12
+    shr rax, 3
+    mov [rsp+72], rax           ; where the frame starts, for its crc
     mov ecx, 16
     call ubits
     and eax, 0xfffe
@@ -879,8 +915,28 @@ flac_decode:
     inc ebp
     cmp ebp, [rbx+FI_CH]
     jb .chan
-    add r12, 7                  ; pad to a byte, then the crc-16
+    add r12, 7                  ; pad to a byte, then the crc-16 of everything before it
     and r12, -8
+    mov r8, r12
+    shr r8, 3
+    lea rax, [r8+2]
+    cmp rax, r13
+    ja .bad
+    mov rcx, [rsp+72]
+    xor eax, eax
+    lea r10, [crc16tab]
+.crc:
+    movzx edx, ah
+    xor dl, [rsi+rcx]
+    shl eax, 8
+    xor ax, [r10+rdx*2]
+    inc rcx
+    cmp rcx, r8
+    jb .crc
+    movzx edx, word [rsi+r8]
+    xchg dl, dh
+    cmp ax, dx
+    jne .bad
     add r12, 16
     ; int16, interleaved
     mov r8d, [rbx+FI_CH]

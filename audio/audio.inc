@@ -20,6 +20,14 @@ FI_MD5      equ 40          ; 16 bytes, all 0 = not set
 FI_FRAMES   equ 56          ; -> the first frame
 FI_SIZE     equ 64
 
+; flacenc.asm. flac_put is the bit writer (rdi = next byte, r14 = pending bits,
+; r15d = how many), for building test streams by hand
+extern flac_encode, flac_put, flac_crc8, flac_crc16
+
+FE_DATA     equ 0           ; -> the .flac, mem_alloc'd
+FE_LEN      equ 8
+FE_SIZE     equ 16
+
 ; a decoded flac stream: the FI above, then
 FD_PCM      equ FI_SIZE         ; -> int16 samples, interleaved, mem_alloc'd
 FD_N        equ FI_SIZE + 8     ; samples a channel that got decoded
