@@ -4,7 +4,7 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
@@ -49,6 +49,8 @@ echo == mxfp8
 bin\mx.exe || set BAD=1
 echo == ctc loss
 bin\ctc.exe || set BAD=1
+echo == conv module
+bin\conv.exe || set BAD=1
 
 :done
 echo.
