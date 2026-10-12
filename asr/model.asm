@@ -1724,9 +1724,7 @@ convmid:
     karg 1, [rsi+LP_DW]
     karg 2, [rsi+LP_YC]
     call dw_args
-    mov rcx, [cur_m]
-    imul rcx, [mdl+MD_D]
-    call lin
+    call dw_go
     mov rcx, [rsi+LP_YC]
     mov rdx, [rsi+LP_NCI]
     mov r8, [rsi+LP_ZC]
@@ -1744,6 +1742,19 @@ convmid:
     call lin
     add rsp, 40
     ret
+
+; the depthwise conv's launch: grid (T3, B), 256 threads across the channels
+dw_go:
+    mov ecx, [cur_t]
+    mov edx, [cur_b]
+    mov [kl+KL_GX], ecx
+    mov [kl+KL_GY], edx
+    mov dword [kl+KL_GZ], 1
+    mov dword [kl+KL_BX], 256
+    mov dword [kl+KL_BY], 1
+    mov dword [kl+KL_BZ], 1
+    lea rcx, [kl]
+    jmp gpu_launch
 
 ; M, T3, D, K, bf into the depthwise conv's slots 3..7
 dw_args:
@@ -2223,9 +2234,7 @@ model_bwd:
     karg 1, [rsi+LP_DW]
     karg 2, [d_dgc]
     call dw_args
-    mov rcx, [cur_m]
-    imul rcx, [mdl+MD_D]
-    call lin
+    call dw_go
     KF k_dwcw
     karg 0, [d_dyc]
     karg 1, [rsi+LP_GC]

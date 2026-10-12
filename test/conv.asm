@@ -480,10 +480,8 @@ run_conv:
     sub rsp, 32
     lea rbx, [kl]
     call conv_args
-    mov ecx, [s_m]
-    imul ecx, [s_c]
     mov rax, [f_conv]
-    call go_flat
+    call go_tb
     add rsp, 32
     pop rbx
     ret
@@ -494,10 +492,8 @@ run_convx:
     sub rsp, 32
     lea rbx, [kl]
     call conv_args
-    mov ecx, [s_m]
-    imul ecx, [s_c]
     mov rax, [f_convx]
-    call go_flat
+    call go_tb
     add rsp, 32
     pop rbx
     ret
@@ -1004,4 +1000,24 @@ big:
     say " ms", 13, 10
     add rsp, 48
     pop rbx
+    ret
+
+; rbx = kl with the args in, rax = the function: grid (T, B), 128 threads a block
+; across the channels (the depthwise conv's)
+go_tb:
+    sub rsp, 40
+    mov [rbx+KL_FUNC], rax
+    mov eax, [s_t]
+    mov [rbx+KL_GX], eax
+    mov eax, [s_m]
+    xor edx, edx
+    div dword [s_t]
+    mov [rbx+KL_GY], eax
+    mov dword [rbx+KL_GZ], 1
+    mov dword [rbx+KL_BX], 128
+    mov dword [rbx+KL_BY], 1
+    mov dword [rbx+KL_BZ], 1
+    mov rcx, rbx
+    call gpu_launch
+    add rsp, 40
     ret
