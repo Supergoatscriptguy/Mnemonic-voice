@@ -4,7 +4,7 @@
 extern wav_parse, wav_head, wav_read, wav_write, clip_mono
 
 ; flac.asm
-extern flac_info
+extern flac_info, flac_decode, md5
 
 ; a flac stream's header
 FI_RATE     equ 0
@@ -19,6 +19,14 @@ FI_SAMPLES  equ 32          ; per channel, 0 = unknown
 FI_MD5      equ 40          ; 16 bytes, all 0 = not set
 FI_FRAMES   equ 56          ; -> the first frame
 FI_SIZE     equ 64
+
+; a decoded flac stream: the FI above, then
+FD_PCM      equ FI_SIZE         ; -> int16 samples, interleaved, mem_alloc'd
+FD_N        equ FI_SIZE + 8     ; samples a channel that got decoded
+FD_MD5      equ FI_SIZE + 16    ; u32: 1 the md5 matched, 0 it didn't, 2 the stream has none
+FD_STATS    equ FI_SIZE + 24    ; u64 counts: constant, verbatim, fixed order 0-4, lpc,
+                                ; rice2, escapes, wasted bits, frames, highest lpc order
+FD_SIZE     equ FI_SIZE + 24 + 128
 
 ; dev.asm
 extern dev_open, dev_show, dev_start, dev_stop, dev_close, dev_wait, dev_space, dev_write, dev_read, dev_play
