@@ -1,7 +1,24 @@
 ; audio\ declarations
 
 ; wav.asm
-extern wav_parse, wav_read, wav_write, clip_mono
+extern wav_parse, wav_head, wav_read, wav_write, clip_mono
+
+; flac.asm
+extern flac_info
+
+; a flac stream's header
+FI_RATE     equ 0
+FI_CH       equ 4
+FI_BITS     equ 8
+FI_MINBS    equ 12
+FI_MAXBS    equ 16
+FI_MINFR    equ 20
+FI_MAXFR    equ 24
+FI_BLOCKS   equ 28          ; bit t set = there's a metadata block of type t
+FI_SAMPLES  equ 32          ; per channel, 0 = unknown
+FI_MD5      equ 40          ; 16 bytes, all 0 = not set
+FI_FRAMES   equ 56          ; -> the first frame
+FI_SIZE     equ 64
 
 ; dev.asm
 extern dev_open, dev_show, dev_start, dev_stop, dev_close, dev_wait, dev_space, dev_write, dev_read, dev_play

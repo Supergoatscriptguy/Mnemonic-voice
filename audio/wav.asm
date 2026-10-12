@@ -15,11 +15,11 @@ hi16    dd 32767.0
 
 section .text
 
-; rcx = bytes, rdx = size, r8 = clip to fill. eax = 1 if it's a wav we can read:
-; pcm 16/24/32 or float32, plain or WAVE_FORMAT_EXTENSIBLE. CL_DATA gets
-; mem_alloc'd, mem_free it
-global wav_parse
-wav_parse:
+; rcx = bytes, rdx = size, r8 = clip. reads just the header: rate, channels,
+; bits, frames, and CL_DATA = the raw samples in place. eax = 1 if it's a wav we
+; can read: pcm 16/24/32 or float32, plain or WAVE_FORMAT_EXTENSIBLE
+global wav_head
+wav_head:
     push rbx
     push rsi
     push rdi
@@ -118,6 +118,41 @@ wav_parse:
     xor edx, edx
     div rcx
     mov [r12+CL_FRAMES], rax
+    mov [r12+CL_DATA], r14
+    mov eax, 1
+    jmp .out
+.no:
+    xor eax, eax
+.out:
+    add rsp, 32
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; rcx = bytes, rdx = size, r8 = clip to fill. eax = 1 if it's a wav we can read:
+; pcm 16/24/32 or float32, plain or WAVE_FORMAT_EXTENSIBLE. CL_DATA gets
+; mem_alloc'd, mem_free it
+global wav_parse
+wav_parse:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r15
+    sub rsp, 32
+    mov r12, r8
+    call wav_head
+    test eax, eax
+    jz .no
+    mov rsi, [r12+CL_DATA]
+    mov ebx, [r12+CL_BITS]
+    shr ebx, 3                  ; bytes per sample
+    mov rax, [r12+CL_FRAMES]
     mov ecx, [r12+CL_CH]
     imul rax, rcx
     mov r15, rax                ; samples
@@ -125,7 +160,6 @@ wav_parse:
     call mem_alloc
     mov [r12+CL_DATA], rax
     mov rdi, rax
-    mov rsi, r14
     test r15, r15
     jz .yes
     cmp dword [r12+CL_FLOAT], 0
@@ -177,8 +211,6 @@ wav_parse:
 .out:
     add rsp, 32
     pop r15
-    pop r14
-    pop r13
     pop r12
     pop rdi
     pop rsi
