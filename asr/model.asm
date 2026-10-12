@@ -38,6 +38,10 @@ kn_attsm   db "att_softmax", 0
 kn_attmix  db "att_mix", 0
 kn_attds   db "att_ds", 0
 kn_attdkv  db "att_dkv", 0
+kn_ffwd    db "flash_fwd", 0
+kn_attnd   db "attn_d", 0
+kn_fdq     db "flash_dq", 0
+kn_fdkv    db "flash_dkv", 0
 kn_mmref   db "mm_ref", 0
 kn_gemmtc  db "gemm_tc", 0
 kn_f2bf    db "f2bf", 0
@@ -161,6 +165,12 @@ k_attsm    resq 1
 k_attmix   resq 1
 k_attds    resq 1
 k_attdkv   resq 1
+k_ffwd     resq 1
+k_attnd    resq 1
+k_fdq      resq 1
+k_fdkv     resq 1
+d_attd     resq 1               ; flash's D: dy . y per query and head
+flash      resd 1               ; 1 = attention by the flash kernels (fast, head dim 64)
 k_mmref    resq 1
 k_gemmtc   resq 1
 k_f2bf     resq 1
@@ -394,7 +404,8 @@ fl_ops  dq kn_rms, k_rms, kn_rmsb, k_rmsb, kn_rmsdw, k_rmsdw, kn_colsum, k_colsu
         dq kn_rope, k_rope, kn_swi, k_swi, kn_swib, k_swib, kn_adamw, k_adamw
         dq kn_sumsq, k_sumsq, kn_split, k_splitsum, 0
 fl_attn dq kn_attdot, k_attdot, kn_attsm, k_attsm, kn_attmix, k_attmix
-        dq kn_attds, k_attds, kn_attdkv, k_attdkv, 0
+        dq kn_attds, k_attds, kn_attdkv, k_attdkv
+        dq kn_ffwd, k_ffwd, kn_attnd, k_attnd, kn_fdq, k_fdq, kn_fdkv, k_fdkv, 0
 fl_gemm dq kn_mmref, k_mmref, kn_gemmtc, k_gemmtc, 0
 fl_basic dq kn_f2bf, k_f2bf, 0
 fl_conv dq kn_glu, k_glu, kn_glub, k_glub, kn_silu, k_silu, kn_silub, k_silub
@@ -509,6 +520,15 @@ model_setup:
     test [fe_k3], rax
     jnz .badfast
 .shapes:
+    ; attention by flash on the fast path (it wants bf16 and heads of 64)
+    xor eax, eax
+    cmp dword [mdl_fast], 0
+    je .fl
+    cmp qword [mdl+MD_HD], 64
+    jne .fl
+    mov eax, 1
+.fl:
+    mov [flash], eax
     cvtsi2sd xmm0, qword [mdl+MD_HD]
     sqrtsd xmm0, xmm0
     movsd xmm1, [c_one]
@@ -658,11 +678,16 @@ model_setup:
     lea rax, [r12*4]
     blk LP_RST
     lea rax, [r15+r15*2]
+    mov rcx, [mdl+MD_QKV]       ; 64 rows of slack: flash reads past the last utterance
+    imul rcx, r13
+    shl rcx, 6
+    add rax, rcx
     blk LP_QKV
     mov rax, r15
     blk LP_Y
     mov rax, r12
     imul rax, [mdl+MD_H]
+    add rax, 64                 ; (and past the last lse)
     shl rax, 2
     blk LP_LSE
     lea rax, [rbx*4]
@@ -698,8 +723,14 @@ model_setup:
     mov rcx, [mdl+MD_L]
     imul rcx, r14
     add rcx, [offs+LP_HA]
+    mov rdi, rcx
     call dalloc
     mov [d_act], rax
+    mov rcx, rax                ; zeroed: the slack has to be finite
+    xor edx, edx
+    mov r8, rdi
+    shr r8, 2
+    CU cuMemsetD32
 
     ; the front end's activations and backward scratch, at the most utterances and
     ; frames: a1 [B][T1][F1][C0], a2 [B][T2][F2][C0], a3 [B][T3][F3][C0]
@@ -784,9 +815,30 @@ model_setup:
     lea rcx, [rbx*4]
     call dalloc
     mov [d_dxn], rax
-    mov rcx, r15
+    mov rcx, [mdl+MD_D]         ; with flash's 64 rows of slack, zeroed
+    imul rcx, r13
+    shl rcx, 6
+    add rcx, r15
+    mov rdi, rcx
     call dalloc
     mov [d_dy], rax
+    mov rcx, rax
+    xor edx, edx
+    mov r8, rdi
+    shr r8, 2
+    CU cuMemsetD32
+    mov rcx, r12                ; flash's D, dy . y per query and head, with slack
+    imul rcx, [mdl+MD_H]
+    add rcx, 64
+    shl rcx, 2
+    mov rdi, rcx
+    call dalloc
+    mov [d_attd], rax
+    mov rcx, rax
+    xor edx, edx
+    mov r8, rdi
+    shr r8, 2
+    CU cuMemsetD32
     lea rcx, [r15+r15*2]
     call dalloc
     mov [d_dqkv], rax
@@ -1511,9 +1563,49 @@ att_p:
     add rsp, 40
     ret
 
+; the flash kernels' trailing args (the mask) and grid (ceil(T/64), ecx heads, B)
+flash_go:
+    mov rax, [cur_mb]
+    mov rdx, [rax+MB_TL]
+    mov r8d, [rax+MB_CS]
+    mov r9d, [rax+MB_LEFT]
+    mov eax, [kl+KL_ARGS+120]   ; (the slot the caller says the mask starts at)
+    lea r10, [kl+KL_ARGS]
+    mov [r10+rax*8], rdx
+    mov [r10+rax*8+8], r8
+    mov [r10+rax*8+16], r9
+    mov eax, [cur_t]
+    add eax, 63
+    shr eax, 6
+    mov [kl+KL_GX], eax
+    mov [kl+KL_GY], ecx
+    mov eax, [cur_b]
+    mov [kl+KL_GZ], eax
+    mov dword [kl+KL_BX], 128
+    mov dword [kl+KL_BY], 1
+    mov dword [kl+KL_BZ], 1
+    lea rcx, [kl]
+    jmp gpu_launch
+
 ; rsi = block. y and lse from the qkv
 attn_fwd:
     sub rsp, 40
+    cmp dword [flash], 0
+    je .naive
+    KF k_ffwd
+    karg 0, [rsi+LP_QKV]
+    karg 1, [rsi+LP_Y]
+    karg 2, [rsi+LP_LSE]
+    karg 3, [cur_t]
+    karg 4, [mdl+MD_H]
+    karg 5, [mdl+MD_H]
+    kargf 6, [scale]
+    mov qword [kl+KL_ARGS+120], 7
+    mov ecx, [mdl+MD_H]
+    call flash_go
+    add rsp, 40
+    ret
+.naive:
     xor edx, edx
     call att_p
     KF k_attmix
@@ -1532,6 +1624,38 @@ attn_fwd:
 ; rsi = block. dqkv from dy
 attn_bwd:
     sub rsp, 40
+    cmp dword [flash], 0
+    je .naive
+    KF k_attnd
+    karg 0, [d_dy]
+    karg 1, [rsi+LP_Y]
+    karg 2, [d_attd]
+    karg 3, [cur_m]
+    karg 4, [cur_t]
+    karg 5, [mdl+MD_H]
+    mov rcx, [cur_m]
+    imul rcx, [mdl+MD_H]
+    call lin
+    ; dq, then dk and dv: the same arguments
+    KF k_fdq
+    karg 0, [rsi+LP_QKV]
+    karg 1, [d_dy]
+    karg 2, [rsi+LP_LSE]
+    karg 3, [d_attd]
+    karg 4, [d_dqkv]
+    karg 5, [cur_t]
+    karg 6, [mdl+MD_H]
+    karg 7, [mdl+MD_H]
+    kargf 8, [scale]
+    mov qword [kl+KL_ARGS+120], 9
+    mov ecx, [mdl+MD_H]
+    call flash_go
+    KF k_fdkv
+    mov ecx, [mdl+MD_H]
+    call flash_go
+    add rsp, 40
+    ret
+.naive:
     mov edx, 1
     call att_p
     ; dP = dy v, then dS
