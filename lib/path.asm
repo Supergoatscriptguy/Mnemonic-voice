@@ -5,6 +5,39 @@ bits 64
 
 section .text
 
+; rcx = a file's path. makes every directory on the way to it (not the file).
+; cut up and put back in place like make_path
+global make_parent
+make_parent:
+    push rbx
+    push rsi
+    sub rsp, 40
+    mov rbx, rcx
+    lea rsi, [rcx+1]
+.scan:
+    mov al, [rsi]
+    test al, al
+    jz .done
+    cmp al, '\'
+    je .cut
+    cmp al, '/'
+    jne .next
+.cut:
+    mov byte [rsi], 0
+    mov [rsp+32], al
+    mov rcx, rbx
+    call make_dir
+    mov al, [rsp+32]
+    mov [rsi], al
+.next:
+    inc rsi
+    jmp .scan
+.done:
+    add rsp, 40
+    pop rsi
+    pop rbx
+    ret
+
 ; rcx = a directory path. makes it and every directory on the way to it.
 ; the path is cut up and put back in place, so it has to be writable
 global make_path
