@@ -7,7 +7,7 @@
 ; at once, and the upload after the fill waits for the gpu to finish. "tok/s" and
 ; "tokens" on the bar are encoder frames (80 ms each)
 ; aug=1 augments the training data (asr\augment: speed, reverb, noise, spec augment)
-; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
+; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\score asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
 default rel
 bits 64
 %include "lib.inc"
@@ -482,6 +482,15 @@ buffers:
     mov [mb+MB_TL], rax
     mov rax, [d_ul]
     mov [mb+MB_UL], rax
+    ; validation's greedy decoding: each encoder frame's best token
+    mov rbx, [mdl+MD_M]
+    shl rbx, 2
+    mov rcx, rbx
+    call gpu_alloc
+    mov [d_best], rax
+    mov rcx, rbx
+    call gpu_host
+    mov [hbest], rax
     add rsp, 32
     pop rbx
     ret
@@ -935,6 +944,13 @@ report:
     cvtsi2sd xmm1, qword [frames]
     divsd xmm1, xmm0
     movsd [ps+PS_TOKS], xmm1
+    mulsd xmm1, [mdl+MD_FLOPS]  ; training flops a frame, so tflops
+    divsd xmm1, [c_tera]
+    movsd [ps+PS_TFLOPS], xmm1
+    call gpu_meminfo            ; rax free, rdx total
+    mov [ps+PS_VRAMTOT], rdx
+    sub rdx, rax
+    mov [ps+PS_VRAM], rdx
     mov rax, [frames]
     add [seen], rax
     mov rax, [seen]
@@ -951,21 +967,170 @@ report:
     pop rbx
     ret
 
-; the held-out loss per label: up to val_batches of its micro-batches
+; utterance ecx of the batch just run (losses and best tokens downloaded): greedy
+; transcript against its labels, word errors into the vs_ sums. edx = 1 to show the
+; pair above the bar
+score1:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    push r13
+    sub rsp, 32
+    mov r12d, ecx
+    mov r13d, edx
+    ; hypothesis
+    mov eax, [hb+HB_T]
+    shr eax, 3
+    imul eax, r12d
+    mov rcx, [hbest]
+    lea rcx, [rcx+rax*4]
+    mov rax, [hb+HB_TL]
+    mov edx, [rax+r12*4]
+    mov r8, [mdl+MD_V]
+    dec r8d
+    lea r9, [vtok]
+    call ctc_greedy
+    lea rcx, [vtok]
+    mov rdx, rax
+    lea r8, [htext]
+    call tok_decode
+    mov rsi, rax
+    ; reference: its labels
+    mov eax, [hb+HB_U]
+    imul eax, r12d
+    mov rcx, [hb+HB_LAB]
+    lea rcx, [rcx+rax*4]
+    mov rdx, [hb+HB_UL]
+    mov edx, [rdx+r12*4]
+    lea r8, [vtok]
+    xor eax, eax
+.cp:
+    cmp eax, edx
+    jae .cpd
+    mov r9d, [rcx+rax*4]
+    mov [r8+rax*2], r9w
+    inc eax
+    jmp .cp
+.cpd:
+    lea rcx, [vtok]
+    lea r8, [rtext]
+    call tok_decode
+    mov rdi, rax
+    ; as written, then normalized
+    xor ebx, ebx
+.mode:
+    lea rcx, [rtext]
+    mov rdx, rdi
+    mov r8d, ebx
+    lea r9, [rwd]
+    call words
+    mov [rsp+24+32], rax        ; (home slot: reference words)
+    lea rcx, [htext]
+    mov rdx, rsi
+    mov r8d, ebx
+    lea r9, [hwd]
+    call words
+    lea rcx, [rwd]
+    mov rdx, [rsp+24+32]
+    lea r8, [hwd]
+    mov r9, rax
+    call wdist
+    mov rdx, [rsp+24+32]
+    test ebx, ebx
+    jnz .norm
+    add [vs_ex], rax
+    add [vs_exw], rdx
+    jmp .mn
+.norm:
+    add [vs_no], rax
+    add [vs_now], rdx
+.mn:
+    inc ebx
+    cmp ebx, 2
+    jb .mode
+    test r13d, r13d
+    jz .out
+    ; "    REF ..." and "    HYP ..." above the bar, the first 200 bytes of each
+    lea rcx, [msg]
+    lea rdx, [m_ref]
+    call fmt_str
+    mov rcx, rax
+    lea rdx, [rtext]
+    mov r8, rdi
+    call clip200
+    mov rcx, rax
+    lea rdx, [m_hyp]
+    call fmt_str
+    mov rcx, rax
+    lea rdx, [htext]
+    mov r8, rsi
+    call clip200
+    mov word [rax], 0x0a0d
+    lea rdx, [msg]
+    lea r8, [rax+2]
+    sub r8, rdx
+    lea rcx, [ps]
+    call prog_msg
+.out:
+    add rsp, 32
+    pop r13
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+; rcx = out, rdx = text, r8 = its length: copies at most 200 bytes, ending on a
+; character boundary. rax = out's end
+clip200:
+    cmp r8, 200
+    jbe .n
+    mov r8d, 200
+.back:
+    mov al, [rdx+r8]
+    and al, 0xc0
+    cmp al, 0x80
+    jne .n
+    dec r8
+    jmp .back
+.n:
+    xor eax, eax
+.c:
+    cmp rax, r8
+    jae .d
+    mov r9b, [rdx+rax]
+    mov [rcx+rax], r9b
+    inc rax
+    jmp .c
+.d:
+    add rax, rcx
+    ret
+
+; the held-out set: loss per label, word error rate by greedy decoding (normalized,
+; and as written), over up to val_batches of its micro-batches, and the first
+; three clips' transcripts under their references (the plan is fixed, so they're
+; the same clips every time)
 validate:
     push rbx
     push rsi
     push rdi
-    sub rsp, 48
+    push r12
+    sub rsp, 40
     xorpd xmm0, xmm0
-    movsd [rsp+32], xmm0        ; loss
-    xor edi, edi                ; labels
-    xor esi, esi                ; utterances
-    xor ebx, ebx
+    movsd [vs_loss], xmm0
+    xor eax, eax
+    mov [vs_lab], rax
+    mov [vs_utt], rax
+    mov [vs_ex], rax
+    mov [vs_exw], rax
+    mov [vs_no], rax
+    mov [vs_now], rax
     mov eax, __?float32?__(1.0)
     mov [mb+MB_SCALE], eax
     mov rax, [d_loss]
     mov [mb+MB_LOSS], rax
+    xor ebx, ebx
 .b:
     cmp rbx, [va+LD_NB]
     jae .done
@@ -977,16 +1142,26 @@ validate:
     lea rcx, [mb]
     mov edx, FW_LOSS
     call model_fwd
+    mov rcx, [d_best]
+    call model_argmax
     mov rcx, [hloss]
     mov rdx, [d_loss]
     mov r8d, [hb+HB_B]
     shl r8, 2
     call gpu_down
+    mov rcx, [hbest]
+    mov rdx, [d_best]
+    mov r8d, [hb+HB_T]
+    shr r8d, 3
+    imul r8d, [hb+HB_B]
+    shl r8, 2
+    call gpu_down
     mov ecx, [hb+HB_B]
-    add rsi, rcx
-    add edi, [hb+HB_NLAB]
+    add [vs_utt], rcx
+    mov eax, [hb+HB_NLAB]
+    add [vs_lab], rax
     mov rdx, [hloss]
-    movsd xmm0, [rsp+32]
+    movsd xmm0, [vs_loss]
     xor eax, eax
 .u:
     cmp eax, ecx
@@ -996,13 +1171,28 @@ validate:
     inc eax
     jmp .u
 .un:
-    movsd [rsp+32], xmm0
+    movsd [vs_loss], xmm0
+    xor r12d, r12d
+.s:
+    cmp r12d, [hb+HB_B]
+    jae .sn
+    xor edx, edx
+    test rbx, rbx
+    jnz .sc
+    cmp r12d, 3
+    setb dl
+.sc:
+    mov ecx, r12d
+    call score1
+    inc r12d
+    jmp .s
+.sn:
     inc rbx
     jmp .b
 .done:
     mov qword [frames], 0       ; val frames aren't training throughput
-    movsd xmm0, [rsp+32]
-    cvtsi2sd xmm1, rdi
+    movsd xmm0, [vs_loss]
+    cvtsi2sd xmm1, qword [vs_lab]
     divsd xmm0, xmm1
     movsd [ps+PS_VLOSS], xmm0
     lea rcx, [msg]
@@ -1013,10 +1203,24 @@ validate:
     mov r8d, 4
     call fmt_fixed
     mov rcx, rax
-    lea rdx, [m_per]
+    lea rdx, [m_wer]
     call fmt_str
     mov rcx, rax
-    mov rdx, rsi
+    mov rdx, [vs_no]
+    mov r8, [vs_now]
+    call fmt_pct
+    mov rcx, rax
+    lea rdx, [m_aswr]
+    call fmt_str
+    mov rcx, rax
+    mov rdx, [vs_ex]
+    mov r8, [vs_exw]
+    call fmt_pct
+    mov rcx, rax
+    lea rdx, [m_over]
+    call fmt_str
+    mov rcx, rax
+    mov rdx, [vs_utt]
     call fmt_dec
     mov rcx, rax
     lea rdx, [m_utts]
@@ -1026,13 +1230,60 @@ validate:
     sub r8, rdx
     lea rcx, [ps]
     call prog_msg
+    ; and into the log
+    mov rcx, [logf]
+    lea rdx, [msg]
+    mov r8, rax
+    call file_write
     call time_now
     mov [tlog], rax
-    add rsp, 48
+    add rsp, 40
+    pop r12
     pop rdi
     pop rsi
     pop rbx
     ret
+
+; rcx = out, rdx = errors, r8 = words: "12.34%". rax = out's end
+fmt_pct:
+    sub rsp, 40
+    cvtsi2sd xmm1, rdx
+    cvtsi2sd xmm2, r8
+    divsd xmm1, xmm2
+    mulsd xmm1, [c_hundred]
+    mov r8d, 2
+    call fmt_fixed
+    mov byte [rax], '%'
+    inc rax
+    add rsp, 40
+    ret
+
+section .rdata
+m_wer    db ", wer ", 0
+m_aswr   db " (", 0
+m_over   db " as written) over ", 0
+m_ref    db "    REF ", 0
+m_hyp    db 13, 10, "    HYP ", 0
+align 8
+c_hundred dq 100.0
+c_tera   dq 1e12
+section .bss
+alignb 8
+vs_loss  resq 1
+vs_lab   resq 1
+vs_utt   resq 1
+vs_ex    resq 1
+vs_exw   resq 1
+vs_no    resq 1
+vs_now   resq 1
+d_best   resq 1
+hbest    resq 1
+vtok     resw 8192
+rwd      resq 4096
+hwd      resq 4096
+htext    resb 1 << 15
+rtext    resb 1 << 15
+section .text
 
 global start
 start:
@@ -1343,3 +1594,4 @@ pr_fn   resq 128
 pr_ms   resq 128
 pr_cnt  resq 128
 extern ExitProcess
+extern ctc_greedy, words, wdist
