@@ -4,7 +4,7 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
@@ -13,6 +13,9 @@ for %%t in (tone wavinfo play rec convert) do (
 )
 for %%t in (fetch pqinfo pqcat audinfo heavy shards pqshard gunzip wavshard) do (
     call .\build.bat data\%%t >nul || (echo build failed: %%t& set BAD=1)
+)
+for %%t in (gpuinfo gpubench) do (
+    call .\build.bat gpu\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 if %BAD%==1 goto done
 
@@ -40,6 +43,10 @@ echo == flac encoder
 bin\flacenc.exe || set BAD=1
 echo == fft and log-mel
 bin\mel.exe || set BAD=1
+echo == gpu
+bin\gpu.exe || set BAD=1
+echo == mxfp8
+bin\mx.exe || set BAD=1
 
 :done
 echo.
