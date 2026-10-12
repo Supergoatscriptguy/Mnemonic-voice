@@ -94,7 +94,7 @@ section .bss
 alignb 8
 global mdl, mdl_fast, lp, fe, d_params, d_bf, d_grad, d_adm, d_adv, d_logits, d_gn
 mdl        resb MD_SIZE
-fe         resb FE_SIZE
+fe         resb FR_SIZE
 mdl_fast   resd 1
 mdl_bf     resd 1               ; 1 if activations are bf16
 mmbf       resq 1               ; MM_BF, or 0 when activations are f32
@@ -760,20 +760,20 @@ model_setup:
     call dalloc
     mov [fe+%1], rax
 %endmacro
-    fealloc FE_A1, [rsp+32]
-    fealloc FE_D1, [rsp+32]
-    fealloc FE_B2, [rsp+40]
-    fealloc FE_A2, [rsp+40]
-    fealloc FE_D2A, [rsp+40]
-    fealloc FE_D2B, [rsp+40]
+    fealloc FR_A1, [rsp+32]
+    fealloc FR_D1, [rsp+32]
+    fealloc FR_B2, [rsp+40]
+    fealloc FR_A2, [rsp+40]
+    fealloc FR_D2A, [rsp+40]
+    fealloc FR_D2B, [rsp+40]
     mov rax, r12
     imul rax, [fe_k3]
     imul rax, r13
     mov [rsp+40], rax           ; a3 bytes, M * F3 * C0 * es
-    fealloc FE_B3, [rsp+40]
-    fealloc FE_A3, [rsp+40]
-    fealloc FE_D3A, [rsp+40]
-    fealloc FE_D3B, [rsp+40]
+    fealloc FR_B3, [rsp+40]
+    fealloc FR_A3, [rsp+40]
+    fealloc FR_D3A, [rsp+40]
+    fealloc FR_D3B, [rsp+40]
 
     ; everything that's only needed one micro-batch at a time
     mov rcx, r12
@@ -916,40 +916,40 @@ model_setup:
     ; the front end's params
     xor ecx, ecx
     call wop
-    mov [fe+FE_WL], rax
-    mov [fe+FE_GWL], rdx
+    mov [fe+FR_WL], rax
+    mov [fe+FR_GWL], rdx
     mov rax, [fe_k3]
     imul rax, [mdl+MD_D]
     add rcx, rax
     call wop
-    mov [fe+FE_WP2], rax
-    mov [fe+FE_GWP2], rdx
+    mov [fe+FR_WP2], rax
+    mov [fe+FR_GWP2], rdx
     mov rax, [mdl+MD_C0]
     imul rax, rax
     add rcx, rax
     call wop
-    mov [fe+FE_WP3], rax
-    mov [fe+FE_GWP3], rdx
+    mov [fe+FR_WP3], rax
+    mov [fe+FR_GWP3], rdx
     mov rax, [mdl+MD_C0]
     imul rax, rax
     add rcx, rax
     mov r12, rcx                ; matrix params so far
     mov rcx, [mdl+MD_NDEC]
     call wsm
-    mov [fe+FE_W1], rax
-    mov [fe+FE_GW1], rdx
+    mov [fe+FR_W1], rax
+    mov [fe+FR_GW1], rdx
     mov rax, [mdl+MD_C0]
     imul rax, 10
     add rcx, rax
     call wsm
-    mov [fe+FE_W2], rax
-    mov [fe+FE_GW2], rdx
+    mov [fe+FR_W2], rax
+    mov [fe+FR_GW2], rdx
     mov rax, [mdl+MD_C0]
     imul rax, 10
     add rcx, rax
     call wsm
-    mov [fe+FE_W3], rax
-    mov [fe+FE_GW3], rdx
+    mov [fe+FR_W3], rax
+    mov [fe+FR_GW3], rdx
     mov rax, [mdl+MD_C0]
     imul rax, 10
     add rcx, rax
@@ -1965,42 +1965,42 @@ model_fwd:
     mov rax, [cur_tm]
     mov [rsp+32], rax
     mov rcx, [rbx+MB_MEL]
-    mov rdx, [fe+FE_W1]
-    mov r8, [fe+FE_A1]
+    mov rdx, [fe+FR_W1]
+    mov r8, [fe+FR_A1]
     mov r9d, 6
     call sconv
     mov rax, [cur_t1]
     mov [rsp+32], rax
     mov rax, [mdl+MD_F1]
     mov [rsp+40], rax
-    mov rcx, [fe+FE_A1]
-    mov rdx, [fe+FE_W2]
-    mov r8, [fe+FE_B2]
+    mov rcx, [fe+FR_A1]
+    mov rdx, [fe+FR_W2]
+    mov r8, [fe+FR_B2]
     xor r9d, r9d
     call sconv
-    MM [fe+FE_B2], [fe+FE_WP2], [fe+FE_A2], 0, [cur_r2], [mdl+MD_C0], [mdl+MD_C0], [mmbf]
+    MM [fe+FR_B2], [fe+FR_WP2], [fe+FR_A2], 0, [cur_r2], [mdl+MD_C0], [mdl+MD_C0], [mmbf]
     mov r8, [cur_r2]
     imul r8, [mdl+MD_C0]
-    mov rcx, [fe+FE_A2]
+    mov rcx, [fe+FR_A2]
     mov rdx, rcx
     call relu
     mov rax, [cur_t2]
     mov [rsp+32], rax
     mov rax, [mdl+MD_F2]
     mov [rsp+40], rax
-    mov rcx, [fe+FE_A2]
-    mov rdx, [fe+FE_W3]
-    mov r8, [fe+FE_B3]
+    mov rcx, [fe+FR_A2]
+    mov rdx, [fe+FR_W3]
+    mov r8, [fe+FR_B3]
     xor r9d, r9d
     call sconv
-    MM [fe+FE_B3], [fe+FE_WP3], [fe+FE_A3], 0, [cur_r3], [mdl+MD_C0], [mdl+MD_C0], [mmbf]
+    MM [fe+FR_B3], [fe+FR_WP3], [fe+FR_A3], 0, [cur_r3], [mdl+MD_C0], [mdl+MD_C0], [mmbf]
     mov r8, [cur_r3]
     imul r8, [mdl+MD_C0]
-    mov rcx, [fe+FE_A3]
+    mov rcx, [fe+FR_A3]
     mov rdx, rcx
     call relu
     mov rsi, [lp]
-    MM [fe+FE_A3], [fe+FE_WL], [rsi+LP_X], 0, [cur_m], [mdl+MD_D], [fe_k3], 0
+    MM [fe+FR_A3], [fe+FR_WL], [rsi+LP_X], 0, [cur_m], [mdl+MD_D], [fe_k3], 0
 
     mov rdi, [mdl+MD_F]
     add rdi, rdi                ; 2F
@@ -2302,63 +2302,63 @@ model_bwd:
 
 .front:
     ; x = a3 WL^T, then back through the front end
-    MM [d_drest], [fe+FE_WL], [fe+FE_D3A], 0, [cur_m], [fe_k3], [mdl+MD_D], [mmbftb]
-    MM [d_drest], [fe+FE_A3], [fe+FE_GWL], [fe+FE_GWL], [mdl+MD_D], [fe_k3], [cur_m], MM_TA|MM_TB
+    MM [d_drest], [fe+FR_WL], [fe+FR_D3A], 0, [cur_m], [fe_k3], [mdl+MD_D], [mmbftb]
+    MM [d_drest], [fe+FR_A3], [fe+FR_GWL], [fe+FR_GWL], [mdl+MD_D], [fe_k3], [cur_m], MM_TA|MM_TB
     mov r9, [cur_r3]
     imul r9, [mdl+MD_C0]
-    mov rcx, [fe+FE_A3]
-    mov rdx, [fe+FE_D3A]
+    mov rcx, [fe+FR_A3]
+    mov rdx, [fe+FR_D3A]
     mov r8, rdx
     call relu_bwd
-    MM [fe+FE_D3A], [fe+FE_WP3], [fe+FE_D3B], 0, [cur_r3], [mdl+MD_C0], [mdl+MD_C0], [mmbftb]
-    MM [fe+FE_D3A], [fe+FE_B3], [fe+FE_GWP3], [fe+FE_GWP3], [mdl+MD_C0], [mdl+MD_C0], [cur_r3], MM_TA|MM_TB
-    mov rax, [fe+FE_GW3]
+    MM [fe+FR_D3A], [fe+FR_WP3], [fe+FR_D3B], 0, [cur_r3], [mdl+MD_C0], [mdl+MD_C0], [mmbftb]
+    MM [fe+FR_D3A], [fe+FR_B3], [fe+FR_GWP3], [fe+FR_GWP3], [mdl+MD_C0], [mdl+MD_C0], [cur_r3], MM_TA|MM_TB
+    mov rax, [fe+FR_GW3]
     mov [rsp+32], rax
     mov rax, [cur_t2]
     mov [rsp+40], rax
     mov rax, [mdl+MD_F2]
     mov [rsp+48], rax
-    mov rcx, [fe+FE_D3B]
-    mov rdx, [fe+FE_A2]
-    mov r8, [fe+FE_W3]
-    mov r9, [fe+FE_D2A]
+    mov rcx, [fe+FR_D3B]
+    mov rdx, [fe+FR_A2]
+    mov r8, [fe+FR_W3]
+    mov r9, [fe+FR_D2A]
     call sconv_bwd
     mov r9, [cur_r2]
     imul r9, [mdl+MD_C0]
-    mov rcx, [fe+FE_A2]
-    mov rdx, [fe+FE_D2A]
+    mov rcx, [fe+FR_A2]
+    mov rdx, [fe+FR_D2A]
     mov r8, rdx
     call relu_bwd
-    MM [fe+FE_D2A], [fe+FE_WP2], [fe+FE_D2B], 0, [cur_r2], [mdl+MD_C0], [mdl+MD_C0], [mmbftb]
-    MM [fe+FE_D2A], [fe+FE_B2], [fe+FE_GWP2], [fe+FE_GWP2], [mdl+MD_C0], [mdl+MD_C0], [cur_r2], MM_TA|MM_TB
-    mov rax, [fe+FE_GW2]
+    MM [fe+FR_D2A], [fe+FR_WP2], [fe+FR_D2B], 0, [cur_r2], [mdl+MD_C0], [mdl+MD_C0], [mmbftb]
+    MM [fe+FR_D2A], [fe+FR_B2], [fe+FR_GWP2], [fe+FR_GWP2], [mdl+MD_C0], [mdl+MD_C0], [cur_r2], MM_TA|MM_TB
+    mov rax, [fe+FR_GW2]
     mov [rsp+32], rax
     mov rax, [cur_t1]
     mov [rsp+40], rax
     mov rax, [mdl+MD_F1]
     mov [rsp+48], rax
-    mov rcx, [fe+FE_D2B]
-    mov rdx, [fe+FE_A1]
-    mov r8, [fe+FE_W2]
-    mov r9, [fe+FE_D1]
+    mov rcx, [fe+FR_D2B]
+    mov rdx, [fe+FR_A1]
+    mov r8, [fe+FR_W2]
+    mov r9, [fe+FR_D1]
     call sconv_bwd
     mov r9, [cur_t1]
     imul r9, [mdl+MD_F1]
     imul r9, [cur_b]
     imul r9, [mdl+MD_C0]
-    mov rcx, [fe+FE_A1]
-    mov rdx, [fe+FE_D1]
+    mov rcx, [fe+FR_A1]
+    mov rdx, [fe+FR_D1]
     mov r8, rdx
     call relu_bwd
-    mov rax, [fe+FE_GW1]
+    mov rax, [fe+FR_GW1]
     mov [rsp+32], rax
     mov rax, [cur_tm]
     mov [rsp+40], rax
     mov rax, [mdl+MD_NMEL]
     mov [rsp+48], rax
-    mov rcx, [fe+FE_D1]
+    mov rcx, [fe+FR_D1]
     mov rdx, [rbx+MB_MEL]
-    mov r8, [fe+FE_W1]
+    mov r8, [fe+FR_W1]
     xor r9d, r9d
     call sconv_bwd
     add rsp, 72

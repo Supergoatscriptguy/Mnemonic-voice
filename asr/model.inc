@@ -97,29 +97,29 @@ LP_SIZE   equ 424
 ; fe: the subsampling front end. mel [B][T][NMEL] -> conv1 (full 3x3 stride 2, relu)
 ; -> a1 -> depthwise 3x3 stride 2 -> b2 -> pointwise, relu -> a2 -> depthwise -> b3
 ; -> pointwise, relu -> a3, which as [B*T3][F3*C0] goes through WL into the encoder
-FE_WL     equ 0                 ; matrices (matmul operands): [D][F3*C0]
-FE_WP2    equ 8                 ;   [C0][C0]
-FE_WP3    equ 16
-FE_GWL    equ 24                ; their gradients
-FE_GWP2   equ 32
-FE_GWP3   equ 40
-FE_W1     equ 48                ; conv taps and biases, f32 [10][C0]
-FE_W2     equ 56
-FE_W3     equ 64
-FE_GW1    equ 72
-FE_GW2    equ 80
-FE_GW3    equ 88
-FE_A1     equ 96                ; activations, T: [B][T1][F1][C0]
-FE_B2     equ 104               ; [B][T2][F2][C0]
-FE_A2     equ 112
-FE_B3     equ 120               ; [B][T3][F3][C0]
-FE_A3     equ 128
-FE_D1     equ 136               ; backward scratch, T: the size of a1
-FE_D2A    equ 144               ;   of a2 (two)
-FE_D2B    equ 152
-FE_D3A    equ 160               ;   of a3 (two)
-FE_D3B    equ 168
-FE_SIZE   equ 176
+FR_WL     equ 0                 ; matrices (matmul operands): [D][F3*C0]
+FR_WP2    equ 8                 ;   [C0][C0]
+FR_WP3    equ 16
+FR_GWL    equ 24                ; their gradients
+FR_GWP2   equ 32
+FR_GWP3   equ 40
+FR_W1     equ 48                ; conv taps and biases, f32 [10][C0]
+FR_W2     equ 56
+FR_W3     equ 64
+FR_GW1    equ 72
+FR_GW2    equ 80
+FR_GW3    equ 88
+FR_A1     equ 96                ; activations, T: [B][T1][F1][C0]
+FR_B2     equ 104               ; [B][T2][F2][C0]
+FR_A2     equ 112
+FR_B3     equ 120               ; [B][T3][F3][C0]
+FR_A3     equ 128
+FR_D1     equ 136               ; backward scratch, T: the size of a1
+FR_D2A    equ 144               ;   of a2 (two)
+FR_D2B    equ 152
+FR_D3A    equ 160               ;   of a3 (two)
+FR_D3B    equ 168
+FR_SIZE   equ 176
 
 ; one micro-batch, as model_fwd/bwd want it
 MB_MEL    equ 0                 ; device f32 [B][T][NMEL], log-mel, normalized
