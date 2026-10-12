@@ -27,6 +27,8 @@ x6      db 0x57, 0xed, 0xf4, 0xa2, 0x2b, 0xe3, 0xc9, 0x55, 0xac, 0x49, 0xda, 0x2
 f_tc    db "datasets\librispeech\test.clean.parquet", 0
 f_to    db "datasets\librispeech\test.other.parquet", 0
 f_ll    db "datasets\librilight\small.head", 0
+p_vec   db "test\flac\*.flac", 0
+l_vec   db "test\flac (made by ffmpeg)", 0
 c_audio db "audio.bytes", 0
 s_flac  db ".flac", 0
 align 8
@@ -47,6 +49,7 @@ nok     resq 1
 nbad    resq 1
 nsamp   resq 1
 ticks   resq 1
+found   resb 8192
 
 section .text
 
@@ -257,6 +260,34 @@ report:
     call print_dec
 %endmacro
 
+; what subframes and partitions turned up so far, then clears the counts
+seen:
+    sub rsp, 40
+    say "  subframes seen: constant "
+    statline 0, ""
+    statline 1, ", verbatim "
+    statline 2, ", fixed order 0 "
+    statline 3, " / 1 "
+    statline 4, " / 2 "
+    statline 5, " / 3 "
+    statline 6, " / 4 "
+    statline 7, ", lpc "
+    statline 12, " (orders up to "
+    say ")", 13, 10, "  partitions: rice2 "
+    statline 8, ""
+    statline 9, ", escaped "
+    statline 10, ", wasted bits subframes "
+    statline 13, ", long unary codes "
+    statline 11, ", frames "
+    say 13, 10
+    lea rdi, [stats]
+    xor eax, eax
+    mov ecx, 16
+    rep stosq
+    add rsp, 40
+    ret
+
+
 global start
 start:
     push rbx
@@ -346,21 +377,37 @@ start:
     say "  (no libri-light sample, skipped)", 13, 10
 
 .stats:
-    say "  subframes seen: constant "
-    statline 0, ""
-    statline 1, ", verbatim "
-    statline 2, ", fixed order 0 "
-    statline 3, " / 1 "
-    statline 4, " / 2 "
-    statline 5, " / 3 "
-    statline 6, " / 4 "
-    statline 7, ", lpc "
-    statline 12, " (orders up to "
-    say ")", 13, 10, "  partitions: rice2 "
-    statline 8, ""
-    statline 9, ", escaped "
-    statline 10, ", wasted bits subframes "
-    statline 13, ", long unary codes "
-    statline 11, ", frames "
-    say 13, 10
+    call seen
+    ; vectors from another encoder, to reach what the datasets never use
+    mov qword [nok], 0
+    mov qword [nsamp], 0
+    mov qword [ticks], 0
+    lea rcx, [p_vec]
+    lea rdx, [found]
+    mov r8d, 8192
+    call file_find
+    mov rbx, rax
+    mov rsi, rdx
+    cmp rbx, 5
+    check ae, "  the reference vectors are there"
+.vec:
+    test rbx, rbx
+    jz .vecdone
+    mov rcx, [rsi]
+    call file_read_all
+    test rax, rax
+    jz .vnext
+    mov rdi, rax
+    mov rcx, rax
+    call one
+    mov rcx, rdi
+    call mem_free
+.vnext:
+    add rsi, 8
+    dec rbx
+    jmp .vec
+.vecdone:
+    lea rcx, [l_vec]
+    call report
+    call seen
     jmp t_done
