@@ -953,6 +953,40 @@ aug_utt:
     call addnoise
     or r14d, eax
 .done:
+    ; gain, last: the whole thing as a quieter or louder mic would give it
+    mov rax, [ag]
+    xorpd xmm0, xmm0
+    comisd xmm0, [rax+AG_PGAIN]
+    jae .ret                    ; off: no draws, so the rest stays as it was
+    mov rcx, r12
+    call unif
+    mov rax, [ag]
+    comisd xmm0, [rax+AG_PGAIN]
+    jae .ret
+    mov rcx, r12
+    call unif
+    mov rax, [ag]
+    movsd xmm1, [rax+AG_GHI]
+    subsd xmm1, [rax+AG_GLO]
+    mulsd xmm0, xmm1
+    addsd xmm0, [rax+AG_GLO]
+    cvtsd2si eax, xmm0
+    shl eax, 24
+    or r14d, eax
+    or r14d, AI_GAIN
+    mulsd xmm0, [c_db2ln]
+    call math_exp
+    cvtsd2ss xmm0, xmm0
+    xor ecx, ecx
+.g:
+    cmp rcx, r13
+    jae .ret
+    movss xmm1, [rsi+rcx*4]
+    mulss xmm1, xmm0
+    movss [rsi+rcx*4], xmm1
+    inc rcx
+    jmp .g
+.ret:
     mov rax, rsi
     mov rdx, r13
     mov r8d, r14d
@@ -1066,6 +1100,11 @@ k_fw     db "f_width", 0
 k_tmask  db "t_masks", 0
 k_tw     db "t_width", 0
 k_pool   db "noise_pool", 0
+k_pgain  db "p_gain", 0
+k_glo    db "gain_lo", 0
+k_ghi    db "gain_hi", 0
+align 8
+c_db2ln  dq 0.11512925464970229 ; ln 10 / 20
 section .text
 
 %macro cfgf 3                   ; AG slot, key, default
@@ -1084,7 +1123,8 @@ section .text
 
 ; rcx = AG. the settings from the cfg: p_speed (2/3: speed is 0.9x, 1x or 1.1x
 ; evenly), p_rir (0.3), p_noise (0.5), f_masks (2) of up to f_width (27) bins,
-; t_masks (10) of up to t_width (0.05) of the frames, noise_pool (4 h, in seconds)
+; t_masks (10) of up to t_width (0.05) of the frames, noise_pool (4 h, in seconds),
+; p_gain (0) for a gain between gain_lo and gain_hi dB (-25, 5)
 global aug_config
 aug_config:
     push rbx
@@ -1098,6 +1138,9 @@ aug_config:
     cfgd AG_TMASK, k_tmask, 10
     cfgf AG_TW, k_tw, 0.05
     cfgf AG_POOL, k_pool, 14400.0
+    cfgf AG_PGAIN, k_pgain, 0.0
+    cfgf AG_GLO, k_glo, -25.0
+    cfgf AG_GHI, k_ghi, 5.0
     add rsp, 32
     pop rbx
     ret

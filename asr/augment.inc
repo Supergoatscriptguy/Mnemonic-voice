@@ -11,13 +11,17 @@ AG_FW       equ 28              ; u32 their widest, in bins
 AG_TMASK    equ 32              ; u32 time masks
 AG_TW       equ 40              ; f64 their widest, a fraction of the frames
 AG_POOL     equ 48              ; f64 seconds of noise to keep in memory
-AG_SIZE     equ 56
+AG_PGAIN    equ 56              ; f64 chance of a gain change (mic level), last of all
+AG_GLO      equ 64              ; f64 its range in dB
+AG_GHI      equ 72
+AG_SIZE     equ 80
 
 ; what aug_utt did, bits of its info word
 AI_SLOW     equ 1               ; 0.9x
 AI_FAST     equ 2               ; 1.1x
 AI_RIR      equ 4
 AI_NOISE    equ 8               ; then bits 8-15: the kind, 16-23: the snr in dB
+AI_GAIN     equ 16              ; then bits 24-31: the gain in dB (signed)
 AK_NOISE    equ 0               ; noise kinds
 AK_MUSIC    equ 1
 AK_BABBLE   equ 2

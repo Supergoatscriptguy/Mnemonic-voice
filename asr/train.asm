@@ -56,6 +56,7 @@ k_valb   db "val_batches", 0
 k_saveev db "save_every", 0
 k_keep   db "keep", 0
 k_fresh  db "fresh", 0
+k_init   db "init", 0
 k_aug    db "aug", 0
 k_stream db "stream", 0                ; 1: half the micro-batches with chunked attention
 s_noise  db "datasets\shards\noise", 0
@@ -65,6 +66,7 @@ e_tok    db "can't load the tokenizer (datasets\sptok.bin)", 0
 e_nodata db "no training utterances in the data directories", 0
 m_resume db "  carrying on from ", 0
 m_fresh  db "  fresh weights", 13, 10, 0
+m_init   db "  starting from the weights of ", 0
 m_saved  db "  saved ", 0
 m_val    db "  val: loss ", 0
 m_per    db " per label over ", 0
@@ -598,10 +600,31 @@ resume:
     say 13, 10
     jmp .done
 .fresh:
+    ; init=: another run's weights to start from, with adam starting over
+    lea rcx, [k_init]
+    xor edx, edx
+    call cfg_str
+    test rax, rax
+    jz .random
+    cmp byte [rax], 0
+    je .random
+    mov rbx, rax
+    mov rcx, rax
+    lea rdx, [hdr]
+    call ck_load
+    call model_adam0
+    lea rcx, [m_init]
+    call print_z
+    mov rcx, rbx
+    call print_z
+    say 13, 10
+    jmp .nanval
+.random:
     mov rcx, [seed]
     call model_init
     lea rcx, [m_fresh]
     call print_z
+.nanval:
     mov rax, [c_nan]
     mov [ps+PS_VLOSS], rax
 .done:

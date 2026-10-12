@@ -555,6 +555,15 @@ wavs:
     call print_dec
     say " dB"
 .nn:
+    test edi, AI_GAIN
+    jz .ng
+    say " gain "
+    mov eax, edi
+    sar eax, 24
+    movsxd rcx, eax
+    call print_int
+    say " dB"
+.ng:
     test edi, edi
     jnz .eol
     say " as recorded"
