@@ -1,4 +1,4 @@
-; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4] [chunk=0] [beam=0 topk=8 lm=FILE alpha=0.2 beta=1.5]
+; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4] [chunk=0] [beam=0 topk=8 lm=FILE alpha=0.15 beta=1]
 ; scores a checkpoint (the newest of the preset's run unless ckpt= says) on
 ; held-out speech: ctc loss per label, and word error rate by greedy decoding, as
 ; written (case and punctuation count) and normalized (lower case, no punctuation),
@@ -503,7 +503,7 @@ start:
     cmova rax, rcx
     mov [bm_topk], rax
     lea rcx, [k_alpha]
-    mov rax, __?float64?__(0.2)
+    mov rax, __?float64?__(0.15)
     movq xmm1, rax
     call cfg_float
     movsd [bm_alpha], xmm0
@@ -528,7 +528,7 @@ start:
     lea rax, [lmst]
     mov [bm_lm], rax
     lea rcx, [k_beta]
-    mov rax, __?float64?__(1.5)
+    mov rax, __?float64?__(1.0)
     movq xmm1, rax
     call cfg_float
     movsd [bm_beta], xmm0

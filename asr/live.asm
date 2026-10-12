@@ -6,7 +6,7 @@
 ; starts. chunk=N attends in chunks of N encoder frames, as streaming would.
 ; agc: the speech is brought to `level` dBFS first (the training audio's speech sits
 ; around -21, a headset mic can be 20 dB under). wav=FILE: that file instead of the
-; mic, through the same path. beam=W lm=FILE [alpha=0.2 beta=1.5 topk=8]: the beam
+; mic, through the same path. beam=W lm=FILE [alpha=0.15 beta=1 topk=8]: the beam
 ; search with the word model instead of greedy. ctrl+c stops
 ; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\score audio\dev audio\resample audio\mel audio\wav audio\level tokenizer\pretok tokenizer\bpe tokenizer\tok asr\beam asr\lm
 ; libs: ole32.lib
@@ -533,7 +533,7 @@ start:
     cmova rax, rcx
     mov [bm_topk], rax
     lea rcx, [k_alpha]
-    mov rax, __?float64?__(0.2)
+    mov rax, __?float64?__(0.15)
     movq xmm1, rax
     call cfg_float
     movsd [bm_alpha], xmm0
@@ -556,7 +556,7 @@ start:
     lea rax, [lmst]
     mov [bm_lm], rax
     lea rcx, [k_beta]
-    mov rax, __?float64?__(1.5)
+    mov rax, __?float64?__(1.0)
     movq xmm1, rax
     call cfg_float
     movsd [bm_beta], xmm0
