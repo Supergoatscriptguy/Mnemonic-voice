@@ -1045,6 +1045,16 @@ start:
     mov r8, [maxb]
     mov r9d, 12345
     call ld_plan
+    ; prof=1: time one step's kernels and stop
+    lea rcx, [k_prof]
+    xor edx, edx
+    call cfg_int
+    test rax, rax
+    jz .bar
+    call profile
+    xor ecx, ecx
+    call ExitProcess
+.bar:
     ; the bar
     mov rax, [step]
     mov [ps+PS_STEP], rax
@@ -1104,8 +1114,158 @@ start:
     mov ecx, 2
     call ExitProcess
 
+; prof=1: two steps to warm up, then one with every launch timed. prints the
+; kernels by total time (name, launches, ms, share), and the step's wall time
+profile:
+    push rbx
+    push rsi
+    push rdi
+    push r12
+    sub rsp, 40
+    call onestep
+    call onestep
+    call gpu_sync
+    call time_now
+    mov [pr_t0], rax
+    call gpu_prof_begin
+    call onestep
+    xor ecx, ecx
+    call gpu_prof_end
+    mov rsi, rax                ; launches
+    mov rcx, [pr_t0]
+    call time_since
+    movsd [pr_wall], xmm0
+    ; sum by kernel
+    xor ebx, ebx
+    mov qword [pr_n], 0
+.l:
+    cmp rbx, rsi
+    jae .sorted
+    lea rax, [prof_fn]
+    mov rcx, [rax+rbx*8]
+    lea rax, [prof_ms]
+    cvtss2sd xmm0, [rax+rbx*4]
+    xor edx, edx
+.f:
+    cmp rdx, [pr_n]
+    jae .new
+    lea rax, [pr_fn]
+    cmp [rax+rdx*8], rcx
+    je .add
+    inc rdx
+    jmp .f
+.new:
+    cmp rdx, 128
+    jae .ln
+    lea rax, [pr_fn]
+    mov [rax+rdx*8], rcx
+    lea rax, [pr_ms]
+    mov qword [rax+rdx*8], 0
+    lea rax, [pr_cnt]
+    mov qword [rax+rdx*8], 0
+    inc qword [pr_n]
+.add:
+    lea rax, [pr_ms]
+    addsd xmm0, [rax+rdx*8]
+    movsd [rax+rdx*8], xmm0
+    lea rax, [pr_cnt]
+    inc qword [rax+rdx*8]
+.ln:
+    inc rbx
+    jmp .l
+.sorted:
+    ; the total of the kernel times
+    xorpd xmm0, xmm0
+    xor ecx, ecx
+.t:
+    cmp rcx, [pr_n]
+    jae .td
+    lea rax, [pr_ms]
+    addsd xmm0, [rax+rcx*8]
+    inc rcx
+    jmp .t
+.td:
+    movsd [pr_tot], xmm0
+    say "  one step: "
+    mov rcx, rsi
+    call print_dec
+    say " launches, "
+    movsd xmm0, [pr_tot]
+    mov edx, 1
+    call print_fixed
+    say " ms of kernels, "
+    movsd xmm0, [pr_wall]
+    mulsd xmm0, [c_thou]
+    mov edx, 1
+    call print_fixed
+    say " ms wall", 13, 10
+    ; biggest first: pick the largest left each time
+.pick:
+    xorpd xmm1, xmm1
+    mov rdi, -1
+    xor ecx, ecx
+.p:
+    cmp rcx, [pr_n]
+    jae .pd
+    lea rax, [pr_ms]
+    movsd xmm0, [rax+rcx*8]
+    comisd xmm0, xmm1
+    jbe .pn
+    movapd xmm1, xmm0
+    mov rdi, rcx
+.pn:
+    inc rcx
+    jmp .p
+.pd:
+    cmp rdi, -1
+    je .done
+    movsd [rsp+32], xmm1
+    say "    "
+    lea rax, [pr_fn]
+    mov rcx, [rax+rdi*8]
+    call gpu_fname
+    mov rcx, rax
+    call print_z
+    say " x"
+    lea rax, [pr_cnt]
+    mov rcx, [rax+rdi*8]
+    call print_dec
+    say ": "
+    movsd xmm0, [rsp+32]
+    mov edx, 2
+    call print_fixed
+    say " ms ("
+    movsd xmm0, [rsp+32]
+    divsd xmm0, [pr_tot]
+    mulsd xmm0, [c_pct]
+    mov edx, 1
+    call print_fixed
+    say "%)", 13, 10
+    lea rax, [pr_ms]
+    mov qword [rax+rdi*8], 0
+    jmp .pick
+.done:
+    add rsp, 40
+    pop r12
+    pop rdi
+    pop rsi
+    pop rbx
+    ret
+
+section .rdata
+k_prof  db "prof", 0
+align 8
+c_thou  dq 1000.0
+c_pct   dq 100.0
 section .bss
 fresh_  resq 1
 aug     resq 1
 ag      resb AG_SIZE
+pr_t0   resq 1
+pr_wall resq 1
+pr_tot  resq 1
+pr_n    resq 1
+pr_fn   resq 128
+pr_ms   resq 128
+pr_cnt  resq 128
 extern ExitProcess

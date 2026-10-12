@@ -4,7 +4,7 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn encoder wer) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn flash encoder wer fft) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
@@ -58,10 +58,14 @@ echo == subsampling
 bin\sub.exe || set BAD=1
 echo == attention masks
 bin\attn.exe || set BAD=1
+echo == flash attention with the mask, against the naive kernels
+bin\flash.exe || set BAD=1
 echo == the whole encoder, gradients end to end
 bin\encoder.exe || set BAD=1
 echo == scoring: greedy ctc, words, word error rate
 bin\wer.exe || set BAD=1
+echo == fft and convolution
+bin\fft.exe || set BAD=1
 
 :done
 echo.
