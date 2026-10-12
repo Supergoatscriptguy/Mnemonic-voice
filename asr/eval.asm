@@ -5,7 +5,7 @@
 ; for each shard and over all. data= and the model come from asr\<preset>.cfg like
 ; the trainer's; held=0 takes every shard in the directories, not just
 ; dev*/test*/valid*. show= prints that many reference/hypothesis pairs
-; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\score asr\text data\shard audio\flac audio\mel tokenizer\pretok tokenizer\bpe tokenizer\tok
+; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\score asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
 default rel
 bits 64
 %include "lib.inc"

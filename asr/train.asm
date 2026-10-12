@@ -6,7 +6,8 @@
 ; the cpu fills the next micro-batch while the gpu runs this one: launches return
 ; at once, and the upload after the fill waits for the gpu to finish. "tok/s" and
 ; "tokens" on the bar are encoder frames (80 ms each)
-; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\text data\shard audio\flac audio\mel tokenizer\pretok tokenizer\bpe tokenizer\tok
+; aug=1 augments the training data (asr\augment: speed, reverb, noise, spec augment)
+; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
 default rel
 bits 64
 %include "lib.inc"
@@ -14,6 +15,7 @@ bits 64
 %include "tokenizer/tok.inc"
 %include "asr/model.inc"
 %include "asr/loader.inc"
+%include "asr/augment.inc"
 %include "asr/train.inc"
 
 MAXDIRS equ 16
@@ -54,6 +56,9 @@ k_valb   db "val_batches", 0
 k_saveev db "save_every", 0
 k_keep   db "keep", 0
 k_fresh  db "fresh", 0
+k_aug    db "aug", 0
+s_noise  db "datasets\shards\noise", 0
+m_aug    db "  augmenting: noise pool of ", 0
 e_preset db "no such preset (asr\<name>.cfg)", 0
 e_tok    db "can't load the tokenizer (datasets\sptok.bin)", 0
 e_nodata db "no training utterances in the data directories", 0
@@ -284,6 +289,7 @@ settings:
     geti valb, k_valb, 100
     geti saveev, k_saveev, 1000
     geti keep, k_keep, 3
+    geti aug, k_aug, 0
     mov rax, [fast]
     and eax, PL_FAST
     mov [flags], rax
@@ -336,6 +342,27 @@ loaders:
     lea rdi, [va+LD_MEAN]
     mov ecx, 160
     rep movsd
+    ; augmentation for the training set (never the held-out one)
+    cmp qword [aug], 0
+    je .noaug
+    lea rcx, [ag]
+    call aug_config
+    lea rcx, [ag]
+    lea rdx, [s_noise]
+    mov r8, [maxt]
+    imul r8, 160
+    add r8, 16000
+    call aug_init
+    lea rax, [ag]
+    mov [tr+LD_AUG], rax
+    lea rcx, [m_aug]
+    call print_z
+    movsd xmm0, [ag+AG_POOL]
+    divsd xmm0, [c_hour]
+    mov edx, 1
+    call print_fixed
+    say " h", 13, 10
+.noaug:
     say "  train: "
     mov rcx, [tr+LD_NU]
     call print_dec
@@ -363,6 +390,14 @@ setup:
     sub rsp, 40
     call model_config
     mov rax, [maxt]
+    cmp qword [aug], 0
+    je .t
+    imul rax, 10                ; 0.9x makes them a ninth longer
+    xor edx, edx
+    mov ecx, 9
+    div rcx
+    inc rax
+.t:
     add rax, 127
     and rax, -128
     mov [mdl+MD_T], rax
@@ -1071,4 +1106,6 @@ start:
 
 section .bss
 fresh_  resq 1
+aug     resq 1
+ag      resb AG_SIZE
 extern ExitProcess
