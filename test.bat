@@ -32,6 +32,8 @@ echo == wav
 bin\wav.exe || set BAD=1
 echo == resampler
 bin\resample.exe || set BAD=1
+echo == inflate and gzip
+bin\inflate.exe || set BAD=1
 
 :done
 echo.
