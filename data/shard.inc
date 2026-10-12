@@ -70,3 +70,9 @@ SRC_VOXPOP  equ 2           ; voxpopuli
 SRC_CV      equ 3           ; common voice
 SRC_LS      equ 4           ; librispeech (the test sets)
 SRC_NOTGOLD equ 0x100       ; or'd in: voxpopuli says the transcript isn't gold
+; augmentation, no transcripts (the archive path is the id)
+SRC_DEMAND  equ 10          ; DEMAND environment noise
+SRC_SIMRIR  equ 11          ; openslr 26 simulated room impulse responses
+SRC_BUTRIR  equ 12          ; BUT ReverbDB real room impulse responses
+SRC_BUTROOM equ 13          ; BUT ReverbDB room background ("silence")
+SRC_MUSAN   equ 14          ; MUSAN (noise, music, speech: see the path)
