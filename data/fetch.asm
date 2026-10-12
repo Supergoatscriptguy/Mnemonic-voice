@@ -1,8 +1,10 @@
 ; fetch URL DEST [head=N]        one file. head=N gets just its first N bytes
 ; fetch list=FILE [jobs=4]       every "URL DEST" line of a manifest (# starts a comment)
-; fetch mdc=ID DEST [key=FILE]   a Mozilla Data Collective dataset: the api is asked for a
+; fetch mdc=ID DEST [key=FILE] [sample=1]
+;                                a Mozilla Data Collective dataset: the api is asked for a
 ;                                signed storage url (with the key in FILE, default
-;                                Commonvoiceapikey.txt), then that gets downloaded
+;                                Commonvoiceapikey.txt), then that gets downloaded.
+;                                sample=1 gets the dataset's small sample file instead
 ; files that are already there get skipped. a download lands in DEST.tmp and is
 ; renamed once it's complete, and a .tmp left by an earlier try gets picked up
 ; with a Range request, so after a failure just run the same command again.
@@ -44,6 +46,8 @@ s_range db "Range: bytes=", 0
 s_auth  db "Authorization: Bearer ", 0
 mdc_pre db "https://mozilladatacollective.com/api/datasets/", 0
 mdc_suf db "/download", 0
+mdc_smp db "/sample-download", 0
+k_smp   db "sample", 0
 j_url   db '"downloadUrl"', 0
 j_size  db '"sizeBytes"', 0
 j_name  db '"filename"', 0
@@ -73,6 +77,7 @@ session resq 1
 jobs    resq 1                  ; (url, dest) pairs
 njobs   resq 1
 mdcid   resq 1                  ; the dataset id in mdc mode, else 0
+sample  resq 1                  ; mdc: just the dataset's sample file
 head    resq 1
 done    resq 1
 have    resq 1
@@ -565,6 +570,10 @@ resolve:
     call copyz
     mov rcx, rax
     lea rdx, [mdc_suf]
+    cmp qword [sample], 0
+    je .suffix
+    lea rdx, [mdc_smp]
+.suffix:
     call copyz
     lea rcx, [rbx+T_TMP+512]
     mov rdx, rbx
@@ -1117,6 +1126,10 @@ start:
     mov [mdcid], rax
     cmp byte [argdest], 0
     je .usage
+    lea rcx, [k_smp]
+    xor edx, edx
+    call cfg_int
+    mov [sample], rax
     lea rcx, [k_key]
     lea rdx, [d_key]
     call cfg_str
