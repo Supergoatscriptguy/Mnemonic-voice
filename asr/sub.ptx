@@ -12,7 +12,8 @@
 // (i along time, j along frequency), then the bias
 
 // y[b,o,p,c] = act(w[9][c] + sum_ij w[3i+j][c] x[b, 2o-2+i, 2p-1+j, c])
-// one thread per output, taps in order after the bias
+// grid (Fo, To, B): a block per output position, its threads across the channels
+// (a block's worth apart), taps in order after the bias
 .visible .entry sconv(
     .param .u64 px,
     .param .u64 pw,
@@ -45,21 +46,17 @@
     shr.u32         %r8, %r8, 1;                // To
     add.u32         %r9, %r3, 1;
     shr.u32         %r9, %r9, 1;                // Fo
-    mov.u32         %r10, %ctaid.x;
     mov.u32         %r11, %ntid.x;
-    mov.u32         %r12, %tid.x;
-    mad.lo.u32      %r13, %r10, %r11, %r12;
-    mul.lo.u32      %r14, %r1, %r8;
-    mul.lo.u32      %r14, %r14, %r9;
-    mul.lo.u32      %r14, %r14, %r4;            // outputs
-    setp.ge.u32     %p, %r13, %r14;
+    mov.u32         %r17, %ctaid.x;             // p
+    mov.u32         %r18, %ctaid.y;             // o
+    mov.u32         %r19, %ctaid.z;             // b
+    mov.u32         %r15, %tid.x;               // c
+cloop:
+    setp.ge.u32     %p, %r15, %r4;
     @%p bra         done;
-    rem.u32         %r15, %r13, %r4;            // c
-    div.u32         %r16, %r13, %r4;
-    rem.u32         %r17, %r16, %r9;            // p
-    div.u32         %r16, %r16, %r9;
-    rem.u32         %r18, %r16, %r8;            // o
-    div.u32         %r19, %r16, %r8;            // b
+    mad.lo.u32      %r13, %r19, %r8, %r18;
+    mad.lo.u32      %r13, %r13, %r9, %r17;
+    mad.lo.u32      %r13, %r13, %r4, %r15;      // the output
     ld.param.u64    %rd1, [px];
     ld.param.u64    %rd2, [pw];
     mad.lo.u32      %r20, %r4, 9, %r15;
@@ -120,6 +117,8 @@ nexti:
     @%pb cvt.rn.bf16.f32 %h, %f1;
     @%pb st.global.b16 [%rd7], %h;
     @!%pb st.global.f32 [%rd7], %f1;
+    add.u32         %r15, %r15, %r11;           // the next channel this thread does
+    bra             cloop;
 done:
     ret;
 }
@@ -128,7 +127,8 @@ done:
 // read by output o = (t+2-i)/2, p = (f+1-j)/2 through tap 3i+j, wherever those
 // come out whole and inside:
 //   dx[b,t,f,c] = sum_ij w[3i+j][c] dy[b,o,p,c]
-// dy and dx are T. one thread per input number
+// dy and dx are T. grid (F, T, B): a block per input position, threads across the
+// channels
 .visible .entry sconv_bwdx(
     .param .u64 pdy,
     .param .u64 pw,
@@ -157,21 +157,17 @@ done:
     shr.u32         %r8, %r8, 1;                // To
     add.u32         %r9, %r3, 1;
     shr.u32         %r9, %r9, 1;                // Fo
-    mov.u32         %r10, %ctaid.x;
     mov.u32         %r11, %ntid.x;
-    mov.u32         %r12, %tid.x;
-    mad.lo.u32      %r13, %r10, %r11, %r12;
-    mul.lo.u32      %r14, %r1, %r2;
-    mul.lo.u32      %r14, %r14, %r3;
-    mul.lo.u32      %r14, %r14, %r4;            // inputs
-    setp.ge.u32     %p, %r13, %r14;
+    mov.u32         %r17, %ctaid.x;             // f
+    mov.u32         %r18, %ctaid.y;             // t
+    mov.u32         %r19, %ctaid.z;             // b
+    mov.u32         %r15, %tid.x;               // c
+cloop:
+    setp.ge.u32     %p, %r15, %r4;
     @%p bra         done;
-    rem.u32         %r15, %r13, %r4;            // c
-    div.u32         %r16, %r13, %r4;
-    rem.u32         %r17, %r16, %r3;            // f
-    div.u32         %r16, %r16, %r3;
-    rem.u32         %r18, %r16, %r2;            // t
-    div.u32         %r19, %r16, %r2;            // b
+    mad.lo.u32      %r13, %r19, %r2, %r18;
+    mad.lo.u32      %r13, %r13, %r3, %r17;
+    mad.lo.u32      %r13, %r13, %r4, %r15;      // the input
     ld.param.u64    %rd1, [pdy];
     ld.param.u64    %rd2, [pw];
     mov.f32         %f1, 0f00000000;
@@ -224,6 +220,8 @@ nexti:
     @%pb cvt.rn.bf16.f32 %h, %f1;
     @%pb st.global.b16 [%rd7], %h;
     @!%pb st.global.f32 [%rd7], %f1;
+    add.u32         %r15, %r15, %r11;
+    bra             cloop;
 done:
     ret;
 }

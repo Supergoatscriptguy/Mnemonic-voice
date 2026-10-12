@@ -1,10 +1,11 @@
-; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4]
+; eval PRESET [ckpt=PATH] [data=DIRS] [held=1] [show=4] [chunk=0]
 ; scores a checkpoint (the newest of the preset's run unless ckpt= says) on
 ; held-out speech: ctc loss per label, and word error rate by greedy decoding, as
 ; written (case and punctuation count) and normalized (lower case, no punctuation),
 ; for each shard and over all. data= and the model come from asr\<preset>.cfg like
 ; the trainer's; held=0 takes every shard in the directories, not just
-; dev*/test*/valid*. show= prints that many reference/hypothesis pairs
+; dev*/test*/valid*. show= prints that many reference/hypothesis pairs. chunk=N
+; scores it streaming: attention in chunks of N encoder frames (80 ms each)
 ; uses: gpu\cuda gpu\kernels asr\model asr\ckpt asr\loader asr\augment asr\score asr\text data\shard audio\flac audio\mel audio\fft audio\resample tokenizer\pretok tokenizer\bpe tokenizer\tok
 default rel
 bits 64
@@ -35,6 +36,7 @@ k_ckpt   db "ckpt", 0
 k_data   db "data", 0
 k_held   db "held", 0
 k_show   db "show", 0
+k_chunk  db "chunk", 0
 k_maxsec db "max_sec", 0
 k_frames db "frames", 0
 k_maxb   db "maxb", 0
@@ -60,6 +62,7 @@ fast     resq 1
 bf16     resq 1
 held     resq 1
 show     resq 1
+chunk    resq 1
 flags    resq 1
 va       resb LD_SIZE
 hb       resb HB_SIZE
@@ -242,6 +245,12 @@ feed:
     shr eax, 3
     mov [mb+MB_CS], eax         ; full context, one chunk
     mov dword [mb+MB_LEFT], 0
+    mov rax, [chunk]            ; chunk=N: streaming, N encoder frames a chunk, all
+    test rax, rax               ; the left context
+    jz .full
+    mov [mb+MB_CS], eax
+    mov dword [mb+MB_LEFT], 0xffffffff
+.full:
     add rsp, 32
     pop rbx
     ret
@@ -449,6 +458,7 @@ start:
     geti bf16, k_bf16, 1
     geti held, k_held, 1
     geti show, k_show, 4
+    geti chunk, k_chunk, 0
     mov rax, [fast]
     and eax, PL_FAST
     mov [flags], rax

@@ -57,6 +57,7 @@ k_saveev db "save_every", 0
 k_keep   db "keep", 0
 k_fresh  db "fresh", 0
 k_aug    db "aug", 0
+k_stream db "stream", 0                ; 1: half the micro-batches with chunked attention
 s_noise  db "datasets\shards\noise", 0
 m_aug    db "  augmenting: noise pool of ", 0
 e_preset db "no such preset (asr\<name>.cfg)", 0
@@ -290,6 +291,7 @@ settings:
     geti saveev, k_saveev, 1000
     geti keep, k_keep, 3
     geti aug, k_aug, 0
+    geti stream, k_stream, 0
     mov rax, [fast]
     and eax, PL_FAST
     mov [flags], rax
@@ -749,11 +751,30 @@ feed:
     mov [mb+MB_T], eax
     mov eax, [hb+HB_U]
     mov [mb+MB_UMAX], eax
-    ; full context for now: one chunk as long as the utterance
+    ; full context: one chunk as long as the utterance. training with stream=1
+    ; chunks half the micro-batches instead (2, 4, 8 or 16 encoder frames, all the
+    ; left context), so the model learns to work streaming too
     mov eax, [hb+HB_T]
     shr eax, 3
     mov [mb+MB_CS], eax
     mov dword [mb+MB_LEFT], 0
+    lea rax, [tr]
+    cmp rsi, rax
+    jne .ctx
+    cmp qword [stream], 0
+    je .ctx
+    lea rcx, [srng]
+    call rng_next
+    test al, 1
+    jz .ctx
+    shr eax, 1
+    and eax, 3
+    mov ecx, eax
+    mov eax, 2
+    shl eax, cl
+    mov [mb+MB_CS], eax
+    mov dword [mb+MB_LEFT], 0xffffffff
+.ctx:
     ; encoder frames of speech in it
     xor eax, eax
     xor ecx, ecx
@@ -1036,6 +1057,11 @@ start:
     call buffers
     call dirs_up
     call resume
+    lea rcx, [srng]
+    mov rdx, [seed]
+    imul rdx, rdx, 7919
+    add rdx, [step]
+    call rng_seed
     call plan
     ; the held-out set: one fixed plan
     mov rax, [flags]
@@ -1260,6 +1286,8 @@ c_pct   dq 100.0
 section .bss
 fresh_  resq 1
 aug     resq 1
+stream  resq 1
+srng    resb RNG_SIZE               ; picks the chunked micro-batches
 ag      resb AG_SIZE
 pr_t0   resq 1
 pr_wall resq 1

@@ -1769,19 +1769,28 @@ sconv:
     karg 6, [mdl+MD_C0]
     or r9d, [mdl_bf]
     mov [kl+KL_ARGS+56], r9
-    ; outputs: B * ceil(T/2) * ceil(F/2) * C0
-    mov rcx, [rsp+80]
+    ; grid (ceil(F/2), ceil(T/2), B), threads across the channels
+    mov rcx, [rsp+88]
     inc rcx
     shr rcx, 1
-    mov rax, [rsp+88]
-    inc rax
-    shr rax, 1
-    imul rcx, rax
-    imul rcx, [cur_b]
-    imul rcx, [mdl+MD_C0]
-    call lin
+    mov rdx, [rsp+80]
+    inc rdx
+    shr rdx, 1
+    call grid3
     add rsp, 40
     ret
+
+; the front end convs' launch: grid (ecx, edx, cur_b), 256 threads a block
+grid3:
+    mov [kl+KL_GX], ecx
+    mov [kl+KL_GY], edx
+    mov eax, [cur_b]
+    mov [kl+KL_GZ], eax
+    mov dword [kl+KL_BX], 256
+    mov dword [kl+KL_BY], 1
+    mov dword [kl+KL_BZ], 1
+    lea rcx, [kl]
+    jmp gpu_launch
 
 ; its backward: rcx = dy, rdx = x, r8 = w, r9 = dx (0: x is the mel, which needs no
 ; gradient), then on the stack the weight's gradient (added to), frames and bins
@@ -1806,11 +1815,9 @@ sconv_bwd:
     karg 6, [mdl+MD_C0]
     mov eax, [mdl_bf]
     karg 7, rax
-    mov rcx, [rsp+104]
-    imul rcx, [rsp+112]
-    imul rcx, [cur_b]
-    imul rcx, [mdl+MD_C0]
-    call lin
+    mov rcx, [rsp+112]          ; grid (F, T, B)
+    mov rdx, [rsp+104]
+    call grid3
 .dw:
     KF k_sconvw
     karg 0, rbx

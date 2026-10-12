@@ -534,17 +534,14 @@ run_sconv:
     sub rsp, 32
     lea rbx, [kl]
     call conv_args
-    mov ecx, [s_t]
+    mov ecx, [s_f]              ; grid (Fo, To, B)
     inc ecx
     shr ecx, 1
-    mov eax, [s_f]
-    inc eax
-    shr eax, 1
-    imul ecx, eax
-    imul ecx, [s_b]
-    imul ecx, [s_c]
+    mov edx, [s_t]
+    inc edx
+    shr edx, 1
     mov rax, [f_sconv]
-    call go_flat
+    call go3
     add rsp, 32
     pop rbx
     ret
@@ -555,14 +552,29 @@ run_sbx:
     sub rsp, 32
     lea rbx, [kl]
     call conv_args
-    mov ecx, [s_t]
-    imul ecx, [s_f]
-    imul ecx, [s_b]
-    imul ecx, [s_c]
+    mov ecx, [s_f]              ; grid (F, T, B)
+    mov edx, [s_t]
     mov rax, [f_sbx]
-    call go_flat
+    call go3
     add rsp, 32
     pop rbx
+    ret
+
+; rbx = kl with the args in. rax = the function, ecx, edx = grid x, y (z is s_b),
+; 128 threads a block across the channels
+go3:
+    sub rsp, 40
+    mov [rbx+KL_FUNC], rax
+    mov [rbx+KL_GX], ecx
+    mov [rbx+KL_GY], edx
+    mov eax, [s_b]
+    mov [rbx+KL_GZ], eax
+    mov dword [rbx+KL_BX], 128
+    mov dword [rbx+KL_BY], 1
+    mov dword [rbx+KL_BZ], 1
+    mov rcx, rbx
+    call gpu_launch
+    add rsp, 40
     ret
 
 ; rcx = dy, rdx = x, r8 = partials, r9 = dw (added to)
