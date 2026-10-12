@@ -2,7 +2,7 @@
 ; audinfo file.tar                 or the files in a tar (a cut off one is fine)
 ; counts every distinct format: codec, rate, channels, bits, and for flac the block
 ; sizes, metadata blocks and whether the md5 is set. with total hours
-; uses: data\parquet data\snappy data\zstd data\tar audio\flac audio\wav
+; uses: data\parquet data\snappy data\zstd data\tar audio\flac audio\wav audio\mp3
 default rel
 bits 64
 %include "lib.inc"
@@ -25,6 +25,12 @@ d_col   db "audio.bytes", 0
 usage   db "usage: audinfo file.parquet [column] | file.tar", 13, 10, 0
 e_open  db "can't open that file", 0
 e_col   db "no such column", 0
+s_st    db "stereo", 0
+s_joint db "joint stereo", 0
+s_dual  db "dual", 0
+s_mono  db "mono", 0
+align 8
+m_modes dq s_st, s_joint, s_dual, s_mono
 
 section .bss
 alignb 8
@@ -39,6 +45,7 @@ nkeys   resq 1
 key     resb 128
 blobs   resq 1
 named   resq 1
+mi      resb MI_SIZE
 
 section .text
 
@@ -214,7 +221,90 @@ classify:
     cmp eax, 0xe0ff
     jne .ext
 .mp3:
+    mov rcx, rsi
+    mov rdx, rbx
+    lea r8, [mi]
+    call mp3_info
+    mov ebx, eax                ; (emit takes rsi)
     emit "mp3"
+    test ebx, ebx
+    jz .mp3none
+    emit " mpeg"
+    mov eax, [mi+MI_VER]
+    mov byte [rdi], '1'
+    cmp eax, 1
+    je .mv
+    mov byte [rdi], '2'
+    cmp eax, 2
+    je .mv
+    mov dword [rdi], '2.5'
+    add rdi, 2
+.mv:
+    inc rdi
+    mov byte [rdi], ' '
+    lea rcx, [rdi+1]
+    mov edx, [mi+MI_RATE]
+    call fmt_dec
+    mov rdi, rax
+    emit " Hz "
+    lea rcx, [m_modes]
+    mov eax, [mi+MI_MODE]
+    mov rdx, [rcx+rax*8]
+    mov rcx, rdi
+    call fmt_str
+    mov rdi, rax
+    mov eax, [mi+MI_MINBR]
+    cmp eax, [mi+MI_MAXBR]
+    jne .vbr
+    emit " cbr "
+    mov rcx, rdi
+    mov edx, [mi+MI_MINBR]
+    call fmt_dec
+    mov rdi, rax
+    jmp .flags
+.vbr:
+    emit " vbr "
+    mov rcx, rdi
+    mov edx, [mi+MI_MINBR]
+    call fmt_dec
+    mov byte [rax], '-'
+    lea rcx, [rax+1]
+    mov edx, [mi+MI_MAXBR]
+    call fmt_dec
+    mov rdi, rax
+.flags:
+    cmp dword [mi+MI_XING], 0
+    je .f1
+    emit ", xing"
+.f1:
+    cmp dword [mi+MI_CRC], 0
+    je .f2
+    emit ", crc"
+.f2:
+    cmp dword [mi+MI_MIXED], 0
+    je .f3
+    emit ", mixed"
+.f3:
+    mov eax, [mi+MI_MODES]
+    blsr ecx, eax
+    jz .f4
+    emit ", modes vary"
+.f4:
+    cmp qword [mi+MI_SKIP], 0
+    je .f5
+    emit ", resynced"
+.f5:
+    cmp qword [mi+MI_TAIL], 0
+    je .f6
+    emit ", tail"
+.f6:
+    cvtsi2sd xmm0, qword [mi+MI_SAMPLES]
+    cvtsi2sd xmm1, dword [mi+MI_RATE]
+    divsd xmm0, xmm1
+    jmp .done
+.mp3none:
+    emit ", no frames"
+    xorpd xmm0, xmm0
     jmp .done
 .ext:
     ; not audio: count it by the name's extension, if there's a name

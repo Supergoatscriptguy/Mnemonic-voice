@@ -4,7 +4,7 @@ rem builds every test program and every tool, then runs the self-checking tests
 pushd "%~dp0"
 set BAD=0
 
-for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn flash encoder fastpath wer fft) do (
+for %%t in (hello cpuinfo fmt sys rng threads progress ctrltest wav resample inflate flac flacenc mel gpu mx ctc conv sub attn flash encoder fastpath wer fft mp3) do (
     call .\build.bat test\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 rem the tools too, so nothing rots unnoticed
@@ -68,6 +68,8 @@ echo == scoring: greedy ctc, words, word error rate
 bin\wer.exe || set BAD=1
 echo == fft and convolution
 bin\fft.exe || set BAD=1
+echo == mp3 against the decoder windows ships
+bin\mp3.exe || set BAD=1
 
 :done
 echo.

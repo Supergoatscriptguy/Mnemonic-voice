@@ -104,3 +104,22 @@ CL_CH       equ 20          ; u32
 CL_BITS     equ 24          ; u32, what the source had
 CL_FLOAT    equ 28          ; u32, 1 if the source was float
 CL_SIZE     equ 32
+
+extern mp3_head, mp3_info, mp3_init, mp3_decode
+M3_SIZE     equ 16384 + 4096 + 1024  ; an mp3_decode state (the reservoir reads can overrun)
+
+; what an mp3's frame headers say (mp3_info)
+MI_VER      equ 0           ; u32, 1 / 2 / 25 for mpeg-1 / 2 / 2.5, from the first frame
+MI_RATE     equ 4           ; u32
+MI_MODE     equ 8           ; u32, 0 stereo 1 joint 2 dual 3 mono
+MI_MODES    equ 12          ; u32, every mode seen, a bit each
+MI_MINBR    equ 16          ; u32 kbps
+MI_MAXBR    equ 20          ; u32
+MI_FRAMES   equ 24          ; u64
+MI_SAMPLES  equ 32          ; u64 a channel
+MI_SKIP     equ 40          ; u64 bytes skipped looking for a frame
+MI_TAIL     equ 48          ; u64 bytes after the last whole frame
+MI_XING     equ 56          ; u32, the first frame is a xing/info header
+MI_MIXED    equ 60          ; u32, the rate or version changes
+MI_CRC      equ 64          ; u32, frames carry a crc
+MI_SIZE     equ 72
