@@ -13,6 +13,8 @@ extern mem_alloc, mem_free, arena_init, arena_alloc, arena_reset
 ; file.asm
 extern file_open, file_create, file_append, file_read, file_write, file_size, file_flush, file_close
 extern file_read_all, file_map, file_unmap, file_replace, file_delete, file_exists, make_dir, file_find
+; path.asm (not in Mnemonic)
+extern make_path
 ; args.asm
 extern args_init, argc, argv, cfg_load, cfg_args, cfg_str, cfg_int, cfg_float
 ; time.asm

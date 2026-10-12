@@ -11,7 +11,7 @@ rem the tools too, so nothing rots unnoticed
 for %%t in (tone wavinfo play rec convert) do (
     call .\build.bat audio\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
-for %%t in (fetch pqinfo pqcat audinfo) do (
+for %%t in (fetch pqinfo pqcat audinfo heavy shards) do (
     call .\build.bat data\%%t >nul || (echo build failed: %%t& set BAD=1)
 )
 if %BAD%==1 goto done
