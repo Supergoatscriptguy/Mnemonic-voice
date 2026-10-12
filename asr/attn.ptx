@@ -1,15 +1,23 @@
-// causal attention with grouped kv heads. q, k, v come from the fused qkv rows:
+// attention with grouped kv heads. q, k, v come from the fused qkv rows:
 //   row m = b*T + t is [q: H heads | k: KVH heads | v: KVH heads], hd each
 // query head h reads kv head h / (H/KVH). lse (logsumexp per query, natural log)
 // is saved for the backward pass.
 //
 // the att_* kernels are the naive reference: they write out the whole T x T score
 // matrix per head (S, P, dP, dS in f32 scratch), one thread per number. simple
-// enough to trust, fine for tests and small runs
+// enough to trust, fine for tests and small runs. they take the encoder's mask:
+// query t sees key j when
+//   j < len[b]                       (the utterance's real frames; the rest is padding)
+//   j/cs <= t/cs                     (nothing from a later chunk of cs frames)
+//   t/cs - j/cs <= left              (and at most `left` chunks back)
+// cs = 1 with left = ~0 is plain causal attention, cs >= T is full attention.
+// a query that sees nothing (padding far past the end) gets lse = +inf, so its
+// probabilities all come out 0 and its output is 0, never 0/0
 
-// S[b][h][t][j] = scale * a_t . b_j for j <= t, else masked. two jobs:
+// S[b][h][t][j] = scale * a_t . b_j where the mask allows, else masked. two jobs:
 //   mode 0: a = q (rows of the qkv), b = k, masked = -inf       (scores)
 //   mode 1: a = dy (rows of QD),     b = v, masked = 0, scale 1 (dP in the backward)
+// plen = u32 per utterance
 .visible .entry att_dot(
     .param .u64 pa,
     .param .u64 pqkv,
@@ -21,7 +29,10 @@
     .param .u32 phd,
     .param .u32 pbf,
     .param .f32 pscale,
-    .param .u32 pmode)
+    .param .u32 pmode,
+    .param .u64 plen,
+    .param .u32 pcs,
+    .param .u32 pleft)
 {
     .reg .pred  %p, %pb, %pm;
     .reg .b32   %r<40>;
@@ -56,8 +67,22 @@
     ld.param.u64    %rd1, [ps];
     mul.wide.u32    %rd2, %r10, 4;
     add.u64         %rd1, %rd1, %rd2;
-    setp.le.u32     %p, %r12, %r14;
+    ld.param.u64    %rd8, [plen];
+    mul.wide.u32    %rd9, %r17, 4;
+    add.u64         %rd8, %rd8, %rd9;
+    ld.global.u32   %r31, [%rd8];
+    setp.ge.u32     %p, %r12, %r31;             // a padding key
+    @%p bra         masked;
+    ld.param.u32    %r32, [pcs];
+    div.u32         %r33, %r12, %r32;           // the key's chunk
+    div.u32         %r34, %r14, %r32;           // the query's
+    setp.gt.u32     %p, %r33, %r34;
+    @%p bra         masked;
+    sub.u32         %r35, %r34, %r33;
+    ld.param.u32    %r36, [pleft];
+    setp.le.u32     %p, %r35, %r36;
     @%p bra         live;
+masked:
     selp.f32        %f1, 0f00000000, 0fFF800000, %pm;
     st.global.f32   [%rd1], %f1;
     bra             done;
@@ -112,7 +137,8 @@ done:
 
 // softmax along each row of S, in place (S becomes P), one thread per row.
 // puse = 0: work out lse and save it. puse = 1: use the saved lse (backward, where
-// the scores got recomputed). masked entries are -inf and come out 0
+// the scores got recomputed). masked entries are -inf and come out 0. a row that's
+// all masked saves lse = +inf, so it comes out all 0 both times
 .visible .entry att_softmax(
     .param .u64 ps,
     .param .u64 plse,
@@ -156,6 +182,10 @@ mx:
     add.u32         %r9, %r9, 1;
     bra             mx;
 mxd:
+    mov.f32         %f5, 0f7F800000;
+    setp.eq.f32     %p, %f1, 0fFF800000;
+    @%p st.global.f32 [%rd3], %f5;
+    @%p bra         write;
     mov.f32         %f3, 0f00000000;
     mov.u32         %r9, 0;
     mov.u64         %rd5, %rd1;
@@ -195,6 +225,7 @@ done:
 // one thread per output number, summing a row of P (or dS) against a column of kv:
 //   mode 0: y[m][h][d]      = sum_j P[b,h,t,j] v[b,j,kvh][d]           (y is [M][QD])
 //   mode 1: dq[m][h][d] = scale sum_j dS[b,h,t,j] k[b,j,kvh][d]        (into dqkv's q part)
+// over every j: P and dS are exactly 0 where the mask says no
 .visible .entry att_mix(
     .param .u64 pp,
     .param .u64 pqkv,
@@ -266,7 +297,7 @@ done:
     mov.f32         %f1, 0f00000000;
     mov.u32         %r25, 0;
 jl:
-    setp.gt.u32     %p, %r25, %r17;
+    setp.ge.u32     %p, %r25, %r2;
     @%p bra         jd;
     ld.global.f32   %f2, [%rd1];
     @%pb ld.global.u16 %r26, [%rd3];
@@ -356,7 +387,7 @@ done:
 }
 
 // dk and dv, one thread per number. each kv head collects from all the query heads
-// that read it, and from every query at or after its position:
+// that read it, and from every query (P and dS are 0 where the mask says no):
 //   dk[b,j,kvh][d] = scale sum_h sum_t dS[b,h,t,j] q[b,t,h][d]
 //   dv[b,j,kvh][d] =       sum_h sum_t  P[b,h,t,j] dy[b,t,h][d]
 .visible .entry att_dkv(
@@ -421,15 +452,15 @@ hl:
     setp.ge.u32     %p, %r22, %r21;
     @%p bra         hd;
     mad.lo.u32      %r23, %r14, %r21, %r22;     // query head
-    // P/dS at [b][h][j][j], then down the column
+    // P/dS at [b][h][0][j], then down the column
     mad.lo.u32      %r24, %r16, %r3, %r23;
-    mad.lo.u32      %r24, %r24, %r2, %r17;
+    mul.lo.u32      %r24, %r24, %r2;
     mad.lo.u32      %r24, %r24, %r2, %r17;
     mul.wide.u32    %rd8, %r24, 4;
     add.u64         %rd9, %rd1, %rd8;
     add.u64         %rd10, %rd2, %rd8;
-    // q[b, j, h][d] and dy[b, j, h][d]
-    mad.lo.u32      %r25, %r16, %r2, %r17;
+    // q[b, 0, h][d] and dy[b, 0, h][d]
+    mul.lo.u32      %r25, %r16, %r2;
     mul.lo.u32      %r26, %r25, %r20;
     mad.lo.u32      %r26, %r23, %r5, %r26;
     add.u32         %r26, %r26, %r12;
@@ -440,7 +471,7 @@ hl:
     add.u32         %r27, %r27, %r12;
     mul.wide.u32    %rd12, %r27, %r40;
     add.u64         %rd12, %rd4, %rd12;
-    mov.u32         %r28, %r17;                 // t
+    mov.u32         %r28, 0;                    // t
 tl:
     setp.ge.u32     %p, %r28, %r2;
     @%p bra         td;
