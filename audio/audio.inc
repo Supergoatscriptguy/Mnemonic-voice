@@ -2,6 +2,7 @@
 
 ; wav.asm
 extern wav_parse, wav_head, wav_read, wav_write, clip_mono
+extern level_db
 
 ; flac.asm
 extern flac_info, flac_decode, md5

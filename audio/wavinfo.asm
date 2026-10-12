@@ -1,5 +1,6 @@
-; wavinfo file.wav [more.wav ...]: format, length, peak and rms level of each
-; uses: audio\wav
+; wavinfo file.wav [more.wav ...]: format, length, peak and rms level of each, and
+; the speech's level apart from the pauses
+; uses: audio\wav audio\level
 default rel
 bits 64
 %include "lib.inc"
@@ -123,7 +124,30 @@ start:
     say ", rms "
     movsd xmm0, [rsp+40]
     call print_db
-    say 13, 10
+    ; the speech's level (loud 20 ms frames) and the floor under it, on the mono mix
+    lea rcx, [clip]
+    call clip_mono
+    mov rcx, [clip+CL_DATA]
+    mov rdx, [clip+CL_FRAMES]
+    mov r8d, [clip+CL_RATE]
+    mov r9d, 90
+    call level_db
+    movsd [rsp+40], xmm0
+    mov rcx, [clip+CL_DATA]
+    mov rdx, [clip+CL_FRAMES]
+    mov r8d, [clip+CL_RATE]
+    mov r9d, 10
+    call level_db
+    movsd [rsp+48], xmm0
+    say 13, 10, "    speech "
+    movsd xmm0, [rsp+40]
+    mov edx, 1
+    call print_fixed
+    say ", floor "
+    movsd xmm0, [rsp+48]
+    mov edx, 1
+    call print_fixed
+    say " dBFS (20 ms frames: 90th and 10th percentile)", 13, 10
     mov rcx, [clip+CL_DATA]
     call mem_free
 .nextfile:
